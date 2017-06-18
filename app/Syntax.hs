@@ -7,13 +7,14 @@ data Variable
   = NamedVar Text
   deriving (Eq, Ord, Show)
 
-type Env = Map.Map Variable Value  
+type Env = Map.Map Variable Value
 
 data Value
   = VBool Bool
   | VInt Int
   | VText Text
   | VFun Variable Env Expr
+  | VRecord (Map.Map Text Value)
   deriving (Show)
 
 data Expr
@@ -21,5 +22,6 @@ data Expr
   | Var Variable
   | Lam Variable Expr
   | App Expr Expr
+  | Rec (Map.Map Text Expr)
+  | Proj Text Expr
   deriving (Show)
-

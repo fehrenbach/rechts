@@ -9,6 +9,7 @@ import Text.Megaparsec
 import Text.Megaparsec.Expr
 import Text.Megaparsec.Text
 import qualified Text.Megaparsec.Lexer as L
+import qualified Data.Map.Strict as Map
 
 sc :: Parser ()
 sc = L.space (void spaceChar) lineCmnt blockCmnt
@@ -42,7 +43,7 @@ var = Var <$> variable
 
 fun :: Parser Expr
 fun = do
-  try (symbol "λ")
+  try $ symbol "λ" <|> symbol "\\"
   v <- variable
   symbol "."
   e <- expr
@@ -50,7 +51,7 @@ fun = do
 
 term :: Parser Expr
 term =
-  fun <|> try var <|> parens expr
+  fun <|> record <|> try var <|> parens expr
 
 wholeExpr :: Parser Expr
 wholeExpr = do
@@ -61,4 +62,17 @@ wholeExpr = do
 expr :: Parser Expr
 expr = makeExprParser term table
   where
-    table = [ [ InfixL (App <$ return ()) ] ]
+    table = [ [ Postfix (do symbol "."
+                            l <- identifier
+                            return (Proj l)) ]
+            , [ InfixL (App <$ return ()) ]
+            ]
+
+record :: Parser Expr
+record = (Rec . Map.fromList) <$> between (symbol "{") (symbol "}") (sepBy labelExprPair (symbol ","))
+  where
+    labelExprPair = do
+      l <- identifier
+      symbol "="
+      e <- expr
+      return (l, e)
