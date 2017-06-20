@@ -89,7 +89,7 @@ expr = makeExprParser term table
             ]
 
 record :: Parser Expr
-record = (Rec . Map.fromList) <$> between (symbol "{") (symbol "}") (sepBy labelExprPair (symbol ","))
+record = (Record . Map.fromList) <$> between (symbol "{") (symbol "}") (sepBy labelExprPair (symbol ","))
   where
     labelExprPair = do
       l <- identifier

@@ -39,12 +39,14 @@ data Value
   | VVector (V.Vector (Prefix, Value))
   deriving (Show)
 
+-- Using Map and Vector here was a terrible idea
+-- Lists are so much easier
 data Expr
   = Val Value
   | Var Variable
   | Lam Variable Expr
   | App Expr Expr
-  | Rec (Map.Map Text Expr)
+  | Record (Map.Map Text Expr)
   | Proj Text Expr
   | Tag Text Expr
   | Switch Expr (Map.Map Text (Variable, Expr))

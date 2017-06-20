@@ -25,7 +25,7 @@ eval env (App f x) =
   case (eval env f, eval env x) of
     (Right (VFun var env f), Right x) -> eval (Map.insert var x env) f
     (_, _) -> Left "error in function application"
-eval env (Rec fields) =
+eval env (Record fields) =
   either Left (Right . VRecord) (traverse (eval env) fields)
 eval env (Proj l r) =
   case eval env r of
@@ -46,8 +46,6 @@ eval env (List e) =
   (VVector <$>) <$> traverse id $ V.imap (\i e -> do
                                        v <- (eval env) e
                                        return (PList i PEmpty, v)) e
-  -- v <- eval env e
-  -- return (VVector (V.singleton (PEmpty, v)))
 eval env (Union l r) = do
   (VVector ls) <- eval env l
   VVector rs <- eval env r
@@ -59,12 +57,59 @@ eval env (For x l e) = case eval env l of
                                      return (V.map (\(rl, v) -> (rl <> p, v)) r)
                                  ) l
     in VVector . V.concat . V.toList <$> vs
-    -- fmap VVector (traverse 
   _ -> Left "Something in FOR went wrong"
 
--- _ :: V.Vector (Either String (Prefix, Value)) -> Either String Value
--- V.Vector (Either String (Prefix, Value)) -> Either String (Prefix, Value)
--- Either String (V.Vector (Prefix, Value)) -> Either String Value
+reflect :: Expr -> Expr
+reflect (Val v) = Tag "Val" (Val v)
+reflect (Var v) = Tag "Var" (Val (VText (pack (show v)))) -- need a better rep for this
+reflect (Lam v e) = Tag "Lam" (Record (Map.fromList [ ("var", Val (VText (pack (show v)))) -- need a better rep for this
+                                                    , ("body", reflect e) ]))
+reflect (App f a) = Tag "App" (Record (Map.fromList [ ("f", reflect f), ("x", reflect a) ]))
+reflect (Record flds) = Tag "Record" (Record (Map.map reflect flds))
+reflect (Proj l e) = Tag "Proj" (Record (Map.fromList [ ("l", Val (VText l))
+                                                      , ("r", reflect e) ])) -- call "w" for "consistency"?
+reflect (Tag t e) = Tag "Tag" (Record (Map.fromList [ ("t", Val (VText t))
+                                                    , ("v", reflect e) ]))
+
+trace :: Expr -> Either String Expr
+trace (Val e)   = Right $ Tag "Val" (Val e)
+trace (Var v)   = Right $ reflect (Var v)
+trace (Lam v e) = Right $ Tag "Lam" (Record (Map.fromList [ ("var", Val (VText (pack (show v)))) -- factor out
+                                                          , ("body", reflect e) ]))
+trace (App f a) = do
+  f <- trace f
+  a <- trace a
+  return (Tag "App" (Record (Map.fromList [ ("f", f), ("x", a) ])))
+trace (Record flds) = do
+  flds <- Map.traverseWithKey (\l e -> trace e) flds
+  return (Tag "Record" (Record flds))
+-- Since we currently don't allow dynamic labels (not clear how to do
+-- on DB) and don't have any other record metaprogramming, we might
+-- want to put the result here, too. It's not that easy though.
+-- putting `te` fails, because the value will be wrapped by some trace tag
+-- putting `e` works, but returns the result, not a traced result
+trace (Proj l e) = do
+  te <- trace e
+  return $ Tag "Proj" (Record (Map.fromList [ ("l", (Val (VText l)))
+                                            , ("w", te) -- whole record trace
+                                            -- , ("r", (Proj l ???))
+                                            ]))
+trace (Tag t e) = do
+  e <- trace e
+  return (Tag "Tag" (Record (Map.fromList [ ("t", (Val (VText t)))
+                                          , ("v", e) ])))
+-- So, the idea is that we emit a switch where each case emits the actual trace structure.
+-- I feel like there is something missing though.
+trace (Switch e cases) = do
+  te <- trace e
+  cases' <- Map.traverseWithKey (\t (v, c) -> case trace c of
+                                    Right tc -> Right $ (v, Tag "Switch" (Record (Map.fromList [ ("s", te) -- the switched value
+                                                                                               , ("t", Val (VText t))  -- matching tag
+                                                                                               , ("v", Val (VText (pack (show v))))  -- the variable
+                                                                                               , ("c", reflect c) ]))) -- the case that matched (reflected)
+                                    Left err -> Left err
+                                    ) cases
+  return (Switch e cases')
 
 main :: IO ()
 main = loop
@@ -81,4 +126,11 @@ main = loop
             Left err -> putStrLn ("ERROR: " ++ show err)
             Right v -> do printValue stdout v
                           putStrLn ""
+                          case trace e of
+                            Left err -> putStrLn ("TRACE REWRITING ERROR: " ++ show err)
+                            Right t -> do putStrLn (show t)
+                                          case eval (Map.fromList []) t of
+                                            Left err -> putStrLn ("TRACED EVALUATION ERROR: " ++ show err)
+                                            Right v -> do printValue stdout v
+                                                          putStrLn ""
       loop
