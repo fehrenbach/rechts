@@ -35,6 +35,11 @@ eval env (Proj l r) =
 eval env (Tag t e) = do
   e' <- eval env e
   return (VTagged t e')
+eval env (Switch e cases) = do
+  (VTagged l v) <- eval env e
+  case Map.lookup l cases of
+    Nothing -> Left "No match in case"
+    Just (var, e) -> eval (Map.insert var v env) e
 
 main :: IO ()
 main = loop

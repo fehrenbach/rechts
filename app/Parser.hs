@@ -66,7 +66,7 @@ constant = Val <$> (try int)
 
 term :: Parser Expr
 term =
-  constant <|> fun <|> record <|> try var <|> constructor <|> parens expr
+  constant <|> fun <|> record <|> switch <|> try var <|> constructor <|> parens expr
 
 wholeExpr :: Parser Expr
 wholeExpr = do
@@ -103,3 +103,18 @@ constructor = do
   n <- tag
   v <- freshVar
   return (Lam v (Tag n (Var v)))
+
+switch :: Parser Expr
+switch = do
+  try $ symbol "switch"
+  e <- expr
+  cases <- many case_
+  return (Switch e (Map.fromList cases))
+ where
+   case_ = do
+     symbol "case"
+     l <- tag
+     v <- variable
+     symbol "=>"
+     e <- expr
+     return (l, (v, e))

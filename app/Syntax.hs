@@ -28,5 +28,5 @@ data Expr
   | Rec (Map.Map Text Expr)
   | Proj Text Expr
   | Tag Text Expr
-  -- | Switch Expr (Map.Map Text (Variable, Expr)) -- not sure about this one..
+  | Switch Expr (Map.Map Text (Variable, Expr))
   deriving (Show)
