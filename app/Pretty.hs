@@ -24,7 +24,7 @@ prettyPrefix (PList i p) = dullyellow $ brackets (pretty i) <> prettyPrefix p
 prettyValue :: Value -> Doc
 prettyValue (VBool b) = pretty b
 prettyValue (VInt i) = pretty i
-prettyValue (VText t) = pretty (unpack t)
+prettyValue (VText t) = "\"" <> pretty (unpack t) <> "\""
 prettyValue (VFun v _ e) = "function"
 prettyValue (VRecord flds) = braces (align (kv (Map.toAscList flds)))
   where

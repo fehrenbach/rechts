@@ -62,12 +62,15 @@ fun = do
 int :: Parser Value
 int = VInt . fromInteger <$> L.signed sc L.integer -- this allows spaces between - and the number. Not really sure I want that...
 
+stringLit :: Parser Value
+stringLit = VText . pack <$> (char '"' >> manyTill L.charLiteral (char '"'))
+
 constant :: Parser Expr
-constant = Val <$> (try int)
+constant = Val <$> (int <|> stringLit)
 
 term :: Parser Expr
 term =
-  constant <|> fun <|> record <|> list <|> switch <|> for <|> try var <|> constructor <|> parens expr
+  try constant <|> fun <|> record <|> list <|> switch <|> for <|> try var <|> constructor <|> parens expr
 
 wholeExpr :: Parser Expr
 wholeExpr = do
