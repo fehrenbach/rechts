@@ -5,7 +5,7 @@ module Parser where
 import Syntax
 import Control.Monad (void)
 import Control.Monad.State.Strict
-import Data.Text
+import Data.Text (Text, pack, unpack)
 import Data.Functor.Identity (Identity)
 import Text.Megaparsec
 import Text.Megaparsec.Expr
@@ -13,6 +13,7 @@ import qualified Text.Megaparsec.Text as MPT
 import Data.Char (GeneralCategory(..))
 import qualified Text.Megaparsec.Lexer as L
 import qualified Data.Map.Strict as Map
+import qualified Data.Vector as V
 
 type Parser = StateT Int MPT.Parser
 
@@ -66,7 +67,7 @@ constant = Val <$> (try int)
 
 term :: Parser Expr
 term =
-  constant <|> fun <|> record <|> switch <|> try var <|> constructor <|> parens expr
+  constant <|> fun <|> record <|> list <|> switch <|> for <|> try var <|> constructor <|> parens expr
 
 wholeExpr :: Parser Expr
 wholeExpr = do
@@ -81,6 +82,7 @@ expr = makeExprParser term table
                             l <- identifier
                             return (Proj l)) ]
             , [ InfixL (App <$ return ()) ]
+            , [ InfixR (Union <$ symbol "++") ]
             ]
 
 record :: Parser Expr
@@ -118,3 +120,19 @@ switch = do
      symbol "=>"
      e <- expr
      return (l, (v, e))
+
+list :: Parser Expr
+list = do
+  l <- between (symbol "[") (symbol "]") (sepBy expr (symbol ","))
+  return (List (V.fromList l))
+
+for :: Parser Expr
+for = do
+  try $ symbol "for"
+  symbol "("
+  v <- variable
+  symbol "<-"
+  l <- expr
+  symbol ")"
+  b <- expr
+  return (For v l b)
