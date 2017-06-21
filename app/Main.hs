@@ -58,7 +58,7 @@ eval env (For x l e) = case eval env l of
                             Left e -> Left $ "Error in for comprehension: " ++ show e
                       ) l
     in VVector . V.concat . V.toList <$> vs
-  _ -> Left "Something in FOR went wrong"
+  _ -> Left "The expression to iterate over did not evaluate to a list"
 
 reflect :: Expr -> Expr
 reflect (Val v) = Tag "Val" (Val v)
@@ -122,14 +122,16 @@ trace (Switch e cases) = do
   return (Switch e cases')
 trace (List es) = do
   tes <- traverse trace es
-  return (Tag "List" (List tes))
+  let labelled = V.imap (\i e -> Record (Map.fromList [("p", Val (VText (pack (show i)))), ("v", e)])) tes
+  return (Tag "List" (List labelled))
 trace (Union l r) = do
   l <- trace l
   r <- trace r
-  return $ Tag "Union" (Record (Map.fromList [ ("l", l), ("r", r) ]))
+  return $ Tag "Union" (Record (Map.fromList [ ("l", l), ("r", r) ])) -- NOPE, need to emit code that adds the label!
 trace (For x l b) = do
   tl <- trace l
-  return $ For x l (List (V.singleton (Val (VText "tracing body"))))
+  v <- Right $ GeneratedVar 42 -- TODO freshVar
+  return $ For v l (List (V.singleton (Val (VText "tracing body"))))
 
 main :: IO ()
 main = loop
