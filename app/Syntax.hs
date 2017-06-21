@@ -50,7 +50,7 @@ data Expr
   | Proj Text Expr
   | Tag Text Expr
   | Switch Expr (Map.Map Text (Variable, Expr))
+  | List (V.Vector Expr)
   | Union Expr Expr
   | For Variable Expr Expr
-  | List (V.Vector Expr)
   deriving (Show)

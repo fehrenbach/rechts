@@ -52,9 +52,11 @@ eval env (Union l r) = do
   return (VVector $ (V.map (\(l, v) -> (PLeft l, v)) ls V.++ V.map (\(l, v) -> (PRight l, v)) rs))
 eval env (For x l e) = case eval env l of
   Right (VVector l) ->
-    let vs = traverse id $ V.map (\(p, v) -> do
-                                     (VVector r) <- eval (Map.insert x v env) e
-                                     return (V.map (\(rl, v) -> (rl <> p, v)) r)
+    let vs = traverse id $ V.map (\(p, v) -> 
+                                     case eval (Map.insert x v env) e of
+                                       Right (VVector r) -> Right (V.map (\(rl, v) -> (rl <> p, v)) r)
+                                       Right x -> Left $ "body of a for comprehension did not return a list: " ++ show x
+                                       Left e -> Left $ "Error in for comprehension: " ++ show e
                                  ) l
     in VVector . V.concat . V.toList <$> vs
   _ -> Left "Something in FOR went wrong"
@@ -70,6 +72,15 @@ reflect (Proj l e) = Tag "Proj" (Record (Map.fromList [ ("l", Val (VText l))
                                                       , ("r", reflect e) ])) -- call "w" for "consistency"?
 reflect (Tag t e) = Tag "Tag" (Record (Map.fromList [ ("t", Val (VText t))
                                                     , ("v", reflect e) ]))
+reflect (Switch e cs) = Tag "Switch" (Record (Map.fromList [ ("e", reflect e)
+                                                           , ("cs", cases) ]))
+  where
+    cases :: Expr
+    cases = List (V.fromList (Map.elems (Map.mapWithKey (\t (v, c) ->
+                                                            Record (Map.fromList [ ("t", Val (VText t))
+                                                                                 , ("v", Val (VText (pack (show v))))
+                                                                                 , ("c", reflect c) ])) cs)))
+reflect (List es) = Tag "List" (List (V.map reflect es))
 
 trace :: Expr -> Either String Expr
 trace (Val e)   = Right $ Tag "Val" (Val e)
@@ -110,6 +121,16 @@ trace (Switch e cases) = do
                                     Left err -> Left err
                                     ) cases
   return (Switch e cases')
+trace (List es) = do
+  tes <- traverse trace es
+  return (Tag "List" (List tes))
+trace (Union l r) = do
+  l <- trace l
+  r <- trace r
+  return $ Tag "Union" (Record (Map.fromList [ ("l", l), ("r", r) ]))
+trace (For x l b) = do
+  tl <- trace l
+  return $ For x l (List (V.singleton (Val (VText "tracing body"))))
 
 main :: IO ()
 main = loop
