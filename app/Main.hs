@@ -42,22 +42,21 @@ eval env (Switch e cases) = do
   case Map.lookup l cases of
     Nothing -> Left "No match in case"
     Just (var, e) -> eval (Map.insert var v env) e
-eval env (List e) =
-  (VVector <$>) <$> traverse id $ V.imap (\i e -> do
-                                       v <- (eval env) e
-                                       return (PList i PEmpty, v)) e
+eval env (List es) = do
+  vs <- traverse (eval env) es
+  return (VVector vs)
 eval env (Union l r) = do
   (VVector ls) <- eval env l
   VVector rs <- eval env r
-  return (VVector $ (V.map (\(l, v) -> (PLeft l, v)) ls V.++ V.map (\(l, v) -> (PRight l, v)) rs))
+  return (VVector $ ls V.++ rs)
 eval env (For x l e) = case eval env l of
   Right (VVector l) ->
-    let vs = traverse id $ V.map (\(p, v) -> 
-                                     case eval (Map.insert x v env) e of
-                                       Right (VVector r) -> Right (V.map (\(rl, v) -> (rl <> p, v)) r)
-                                       Right x -> Left $ "body of a for comprehension did not return a list: " ++ show x
-                                       Left e -> Left $ "Error in for comprehension: " ++ show e
-                                 ) l
+    let vs = traverse (\v -> 
+                          case eval (Map.insert x v env) e of
+                            Right (VVector r) -> Right r
+                            Right x -> Left $ "body of a for comprehension did not return a list: " ++ show x
+                            Left e -> Left $ "Error in for comprehension: " ++ show e
+                      ) l
     in VVector . V.concat . V.toList <$> vs
   _ -> Left "Something in FOR went wrong"
 

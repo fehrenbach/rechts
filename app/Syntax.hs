@@ -11,24 +11,6 @@ data Variable
 
 type Env = Map.Map Variable Value
 
-data Prefix
-  = PEmpty
-  | PList Int Prefix
-  | PLeft Prefix
-  | PRight Prefix
-  deriving (Show)
-
-instance Monoid Prefix where
-  mempty = PEmpty
-  mappend = appendPrefix
-
-appendPrefix :: Prefix -> Prefix -> Prefix
-appendPrefix PEmpty p = p
-appendPrefix p PEmpty = p
-appendPrefix (PLeft l) p = PLeft (appendPrefix l p)
-appendPrefix (PRight r) p = PRight (appendPrefix r p)
-appendPrefix (PList i l) p = PList i (appendPrefix l p)
-
 data Value
   = VBool Bool
   | VInt Int
@@ -36,7 +18,7 @@ data Value
   | VFun Variable Env Expr
   | VRecord (Map.Map Text Value)
   | VTagged Text Value
-  | VVector (V.Vector (Prefix, Value))
+  | VVector (V.Vector Value)
   deriving (Show)
 
 -- Using Map and Vector here was a terrible idea

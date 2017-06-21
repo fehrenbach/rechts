@@ -15,12 +15,6 @@ prettyVariable (NamedVar n) = pretty (unpack n)
 label :: Text -> Doc
 label t = blue (pretty (unpack t))
 
-prettyPrefix PEmpty = dullyellow ":"
-prettyPrefix (PLeft p) = dullyellow $ "l" <> prettyPrefix p
-prettyPrefix (PRight p) = dullyellow $ "r" <> prettyPrefix p
-prettyPrefix (PList i p) = dullyellow $ brackets (pretty i) <> prettyPrefix p
-
-
 prettyValue :: Value -> Doc
 prettyValue (VBool b) = pretty b
 prettyValue (VInt i) = pretty i
@@ -34,8 +28,8 @@ prettyValue (VRecord flds) = braces (align (kv (Map.toAscList flds)))
 prettyValue (VVector v) = brackets $ align $ fillSep (els (V.toList v))
   where
     els [] = []
-    els [(l, v)] = [prettyPrefix l <> prettyValue v]
-    els ((l, v):ls) = (prettyPrefix l <> prettyValue v <> ","):els ls 
+    els [v] = [prettyValue v]
+    els (v:ls) = (prettyValue v <> ","):els ls 
     
 prettyValue (VTagged t v) = parens $ align $ green (pretty (unpack t)) </> group (prettyValue v)
 
