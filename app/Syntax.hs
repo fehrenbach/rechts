@@ -35,4 +35,5 @@ data Expr
   | List (V.Vector Expr)
   | Union Expr Expr
   | For Variable Expr Expr
+  | PrependPrefix Expr Expr
   deriving (Show)

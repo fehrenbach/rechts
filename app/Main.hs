@@ -5,7 +5,7 @@ module Main where
 import Prelude hiding (getLine)
 import Syntax
 import Parser
-import Pretty (printValue)
+import Pretty (printValue, printCode)
 import Data.Monoid
 import Data.Text
 import Data.Text.IO (getLine)
@@ -59,6 +59,10 @@ eval env (For x l e) = case eval env l of
                       ) l
     in VVector . V.concat . V.toList <$> vs
   _ -> Left "The expression to iterate over did not evaluate to a list"
+eval env (PrependPrefix l r) = do
+  (VText l) <- eval env l
+  (VText r) <- eval env r
+  return (VText $ l <> r)
 
 reflect :: Expr -> Expr
 reflect (Val v) = Tag "Val" (Val v)
@@ -81,53 +85,70 @@ reflect (Switch e cs) = Tag "Switch" (Record (Map.fromList [ ("e", reflect e)
                                                                                  , ("c", reflect c) ])) cs)))
 reflect (List es) = Tag "List" (List (V.map reflect es))
 
+tr :: Expr -> Text -> Expr -> Either a Expr
+tr v c t =
+  Right (Record (Map.fromList [("v", v), ("t", Tag c t)]))
+
+unit :: Expr
+unit = Record (Map.fromList [])
+
+rec :: [(Text, Expr)] -> Expr
+rec = Record . Map.fromList
+
 trace :: Expr -> Either String Expr
-trace (Val e)   = Right $ Tag "Val" (Val e)
-trace (Var v)   = Right $ reflect (Var v)
-trace (Lam v e) = Right $ Tag "Lam" (Record (Map.fromList [ ("var", Val (VText (pack (show v)))) -- factor out
-                                                          , ("body", reflect e) ]))
-trace (App f a) = do
-  f <- trace f
-  a <- trace a
-  return (Tag "App" (Record (Map.fromList [ ("f", f), ("x", a) ])))
+trace (Val e)   = tr (Val e) "Val" unit
+trace (Var v)   = tr (Var v) "Var" (reflect (Var v)) -- Ugh, not so sure about this one
+trace (Lam v e) = tr (Lam v e) "Lam" (rec [ ("var", Val (VText (pack (show v))))
+                                          , ("body", reflect e) ])
+trace (App f x) = do
+  ft <- trace f
+  xt <- trace x
+  tr (App (Proj "v" ft) (Proj "v" xt)) "App" (rec [("fun", Proj "t" ft), ("arg", Proj "t" xt)])
 trace (Record flds) = do
-  flds <- Map.traverseWithKey (\l e -> trace e) flds
-  return (Tag "Record" (Record flds))
--- Since we currently don't allow dynamic labels (not clear how to do
--- on DB) and don't have any other record metaprogramming, we might
--- want to put the result here, too. It's not that easy though.
--- putting `te` fails, because the value will be wrapped by some trace tag
--- putting `e` works, but returns the result, not a traced result
+  fldst <- Map.traverseWithKey (\l e -> Proj "t" <$> trace e) flds
+  fldsv <- Map.traverseWithKey (\l e -> Proj "v" <$> trace e) flds
+  tr (Record fldsv) "Record" (Record fldst)
 trace (Proj l e) = do
   te <- trace e
-  return $ Tag "Proj" (Record (Map.fromList [ ("l", (Val (VText l)))
-                                            , ("w", te) -- whole record trace
-                                            -- , ("r", (Proj l ???))
-                                            ]))
+  tr (Proj l (Proj "v" te)) "Proj" (rec [ ("lab", Val (VText l))
+                                        , ("rec", Proj "t" te) ])
 trace (Tag t e) = do
-  e <- trace e
-  return (Tag "Tag" (Record (Map.fromList [ ("t", (Val (VText t)))
-                                          , ("v", e) ])))
--- So, the idea is that we emit a switch where each case emits the actual trace structure.
--- I feel like there is something missing though.
+  te <- trace e
+  tr (Tag t e) "Tag" (rec [ ("tag", Val (VText t))
+                          , ("val", Proj "t" te) ])
 trace (Switch e cases) = do
   te <- trace e
+  casesv <- traverse (\(v, c) -> case trace c of
+                                   Right tc -> Right (v, Proj "v" tc)
+                                   Left err -> Left err)
+            cases
   cases' <- Map.traverseWithKey (\t (v, c) -> case trace c of
-                                    Right tc -> Right $ (v, Tag "Switch" (Record (Map.fromList [ ("s", te) -- the switched value
-                                                                                               , ("t", Val (VText t))  -- matching tag
-                                                                                               , ("v", Val (VText (pack (show v))))  -- the variable
-                                                                                               , ("c", reflect c) ]))) -- the case that matched (reflected)
+                                    Right tc -> Right $ (v, Tag "Switch" (Record (Map.fromList [ ("arg", Proj "t" te) -- the switched value
+                                                                                               , ("tag", Val (VText t))  -- matching tag
+                                                                                               , ("var", Val (VText (pack (show v))))  -- the variable
+                                                                                               , ("case", reflect c) ]))) -- the case that matched (reflected)
                                     Left err -> Left err
                                     ) cases
-  return (Switch e cases')
+  return (Record (Map.fromList [ ("v", Switch (Proj "v" te) casesv)
+                               , ("t", Switch e cases') ]))
 trace (List es) = do
   tes <- traverse trace es
-  let labelled = V.imap (\i e -> Record (Map.fromList [("p", Val (VText (pack (show i)))), ("v", e)])) tes
-  return (Tag "List" (List labelled))
+  let labelledValues = V.imap (\i x -> Record (Map.fromList [("p", Val (VText (pack (show i)))), ("v", x)])) es
+  let labelledTraces = V.imap (\i e -> Record (Map.fromList [("p", Val (VText (pack (show i)))), ("e", e)])) tes
+  let plain = V.map id tes
+  tr (List labelledValues) "List" (List labelledTraces)
+  -- return (Tag "List" (List plain))
 trace (Union l r) = do
-  l <- trace l
-  r <- trace r
-  return $ Tag "Union" (Record (Map.fromList [ ("l", l), ("r", r) ])) -- NOPE, need to emit code that adds the label!
+  lt <- trace l
+  rt <- trace r
+  tr (Union (For (GeneratedVar 100) (Proj "v" lt)
+             (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (Val (VText "l")) (Proj "p" (Var (GeneratedVar 100)))),
+                                                       ("v", Proj "v" (Var (GeneratedVar 100)))])))))
+      (For (GeneratedVar 101) (Proj "v" rt)
+        (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (Val (VText "r")) (Proj "p" (Var (GeneratedVar 101)))),
+                                                  ("v", Proj "v" (Var (GeneratedVar 101)))]))))))
+       "Union"
+       (rec [("left", Proj "t" lt), ("right", Proj "t" rt)])
 trace (For x l b) = do
   tl <- trace l
   v <- Right $ GeneratedVar 42 -- TODO freshVar
@@ -150,7 +171,8 @@ main = loop
                           putStrLn ""
                           case trace e of
                             Left err -> putStrLn ("TRACE REWRITING ERROR: " ++ show err)
-                            Right t -> do putStrLn (show t)
+                            Right t -> do printCode stdout t
+                                          putStrLn ""
                                           case eval (Map.fromList []) t of
                                             Left err -> putStrLn ("TRACED EVALUATION ERROR: " ++ show err)
                                             Right v -> do printValue stdout v
