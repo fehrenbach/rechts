@@ -31,7 +31,7 @@ symbol = L.symbol sc
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
 
-rws = ["λ", "switch", "case"]
+rws = ["λ", "switch", "case", "if", "then", "else"]
 
 identifier :: Parser Text
 identifier = pack <$> (lexeme . try) (p >>= check)
@@ -70,7 +70,7 @@ constant = Val <$> (int <|> stringLit)
 
 term :: Parser Expr
 term =
-  try constant <|> fun <|> record <|> list <|> switch <|> for <|> try var <|> constructor <|> parens expr
+  try constant <|> fun <|> record <|> list <|> switch <|> for <|> try var <|> constructor <|> ifthenelse <|> parens expr
 
 wholeExpr :: Parser Expr
 wholeExpr = do
@@ -86,6 +86,7 @@ expr = makeExprParser term table
                             return (Proj l)) ]
             , [ InfixL (App <$ return ()) ]
             , [ InfixR (Union <$ symbol "++") ]
+            , [ InfixN (Eq <$ symbol "==") ]
             ]
 
 record :: Parser Expr
@@ -139,3 +140,13 @@ for = do
   symbol ")"
   b <- expr
   return (For v l b)
+
+ifthenelse :: Parser Expr
+ifthenelse = do
+  try $ symbol "if"
+  c <- expr
+  symbol "then"
+  t <- expr
+  symbol "else"
+  e <- expr
+  return (If c t e)

@@ -21,6 +21,15 @@ eval env (Var v) = case Map.lookup v env of
   Just v -> Right v
   Nothing -> Left $ "Unbound variable " ++ show v
 eval env (Lam v e) = Right (VFun v env e)
+eval env (Eq l r) = do
+  l <- eval env l
+  r <- eval env r
+  return (VBool (l == r))
+eval env (If c t e) = do
+  VBool c <- eval env c
+  if c
+    then eval env t
+    else eval env e
 eval env (App f x) =
   case (eval env f, eval env x) of
     (Right (VFun var env f), Right x) -> eval (Map.insert var x env) f
@@ -58,11 +67,12 @@ eval env (For x l e) = case eval env l of
                             Left e -> Left $ "Error in for comprehension: " ++ show e
                       ) l
     in VVector . V.concat . V.toList <$> vs
-  _ -> Left "The expression to iterate over did not evaluate to a list"
+  Right v -> Left $ "The expression to iterate over did not evaluate to a list: " ++ show v
+  Left err -> Left $ "Some error in for body: " ++ err
 eval env (PrependPrefix l r) = do
   (VText l) <- eval env l
   (VText r) <- eval env r
-  return (VText $ l <> r)
+  return (VText $ l <> "/" <> r)
 
 reflect :: Expr -> Expr
 reflect (Val v) = Tag "Val" (Val v)
@@ -84,6 +94,14 @@ reflect (Switch e cs) = Tag "Switch" (Record (Map.fromList [ ("e", reflect e)
                                                                                  , ("v", Val (VText (pack (show v))))
                                                                                  , ("c", reflect c) ])) cs)))
 reflect (List es) = Tag "List" (List (V.map reflect es))
+reflect (Eq l r) = Tag "Eq" (Record (Map.fromList [ ("left", reflect l)
+                                                  , ("right", reflect r) ]))
+reflect (If c t e) = Tag "If" (Record (Map.fromList [ ("condition", reflect c)
+                                                    , ("then", reflect t)
+                                                    , ("else", reflect e) ]))
+reflect (For v l e) = Tag "For" (Record (Map.fromList [ ("var", Val (VText (pack (show v))))
+                                                      , ("in", reflect l)
+                                                      , ("body", reflect e) ]))
 
 tr :: Expr -> Text -> Expr -> Either a Expr
 tr v c t =
@@ -100,6 +118,20 @@ trace (Val e)   = tr (Val e) "Val" unit
 trace (Var v)   = tr (Var v) "Var" (reflect (Var v)) -- Ugh, not so sure about this one
 trace (Lam v e) = tr (Lam v e) "Lam" (rec [ ("var", Val (VText (pack (show v))))
                                           , ("body", reflect e) ])
+trace (Eq l r) = do
+  lt <- trace l
+  rt <- trace r
+  tr (Eq l r) "Eq" (rec [ ("left", Proj "t" lt)
+                        , ("right", Proj "t" rt)])
+trace (If c t e) = do
+  ct <- trace c
+  tt <- trace t
+  et <- trace e
+  tr (If c (Proj "v" tt)
+           (Proj "v" et))
+    "If"
+    (rec [ ("condition", Proj "t" ct)
+         , ("branch", Proj "t" (If c tt et)) ])
 trace (App f x) = do
   ft <- trace f
   xt <- trace x
@@ -151,8 +183,20 @@ trace (Union l r) = do
        (rec [("left", Proj "t" lt), ("right", Proj "t" rt)])
 trace (For x l b) = do
   tl <- trace l
-  v <- Right $ GeneratedVar 42 -- TODO freshVar
-  return $ For v l (List (V.singleton (Val (VText "tracing body"))))
+  y <- Right $ GeneratedVar 201
+  z <- Right $ GeneratedVar 202
+  tb <- trace b
+  tr (For y (Proj "v" tl)
+       (For z (Proj "v" (App (Lam x tb) (Proj "v" (Var y))))
+         (List (V.singleton (Record (Map.fromList [ ("p", PrependPrefix (Proj "p" (Var z)) (Proj "p" (Var y)))
+                                                  , ("v", Proj "v" (Var z)) ]))))))
+     "For" (rec [ ("in", Proj "t" tl)
+                , ("body", reflect b)
+                , ("var", Val (VText (pack (show x))))
+                , ("out", For y (Proj "v" tl)
+                            (List (V.singleton (Record (Map.fromList [ ("p", Proj "p" (Var y))
+                                                                     , ("t", Proj "t" (App (Lam x tb) (Proj "v" (Var y))))])))))
+                ])
 
 main :: IO ()
 main = loop

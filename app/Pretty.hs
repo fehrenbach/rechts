@@ -27,11 +27,12 @@ prettyValue (VRecord flds) = braces $ align $ kv (Map.toAscList flds)
     kv [] = empty
     kv [(k, v)] = label k <> " = " <> group (prettyValue v)
     kv ((k, v):kvs) = label k <> " = " <> group (prettyValue v) <> "," <$> kv kvs
-prettyValue (VVector v) = brackets $ align $ fillSep (els (V.toList v))
+prettyValue (VVector v) = brackets $ align $ els (V.toList v)
   where
-    els [] = []
-    els [v] = [group $ prettyValue v]
-    els (v:ls) = (group $ prettyValue v <> ","):els ls 
+    els [] = empty
+    els [v] = el v
+    els (v:ls) = el v <> "," <$> els ls
+    el v = group $ prettyValue v
     
 prettyValue (VTagged t v) = parens $ align $ green (pretty (unpack t)) </> group (prettyValue v)
 
@@ -66,8 +67,14 @@ prettyCode (Proj l e) =
   prettyCode e <> magenta "." <> label l
 prettyCode (Union l r) =
   parens $ prettyCode l <+> magenta "++" <+> prettyCode r
+prettyCode (Eq l r) =
+  parens $ prettyCode l <+> magenta "==" <+> prettyCode r
 prettyCode (For x l e) =
   hang 2 $ magenta "for" <+> parens (prettyVariable x <+> "<-" <+> group (prettyCode l)) <$> prettyCode e
+prettyCode (Lam x e) =
+  hang 2 $ parens $ magenta "λ" <> prettyVariable x <> "." </> prettyCode e
+prettyCode (If c t e) =
+  align $ magenta "if" <+> group (prettyCode e) <$> hang 2 (magenta "then" </> prettyCode t) <$> hang 2 (magenta "else" </> prettyCode e)
 prettyCode other = string (show other)
 
 printCode :: Handle -> Expr -> IO ()
