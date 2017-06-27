@@ -115,7 +115,7 @@ rec = Record . Map.fromList
 
 trace :: Expr -> Either String Expr
 trace (Val e)   = tr (Val e) "Val" unit
-trace (Var v)   = tr (Var v) "Var" (reflect (Var v)) -- Ugh, not so sure about this one
+trace (Var v)   = tr (Var v) "Var" (Val (VText (pack (show v)))) -- Ugh?
 trace (Lam v e) = tr (Lam v e) "Lam" (rec [ ("var", Val (VText (pack (show v))))
                                           , ("body", reflect e) ])
 trace (Eq l r) = do
