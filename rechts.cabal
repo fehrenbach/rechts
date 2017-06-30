@@ -26,6 +26,7 @@ executable rechts-exe
   build-depends:       base
                      , ansi-wl-pprint
                      , containers
+                     , either-unwrap
                      , megaparsec
                      , mtl
                      , text

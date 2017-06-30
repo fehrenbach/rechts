@@ -150,3 +150,20 @@ ifthenelse = do
   symbol "else"
   e <- expr
   return (If c t e)
+
+binding :: Parser Stmt
+binding = do
+  v <- variable
+  symbol "="
+  e <- expr
+  symbol ";"
+  return (Binding v e)
+
+statement :: Parser Stmt
+statement = do
+  e <- expr
+  symbol ";"
+  return (Statement e)
+
+toplevel :: Parser [Stmt]
+toplevel = some (try binding <|> statement)

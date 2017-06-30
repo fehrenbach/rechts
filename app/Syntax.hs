@@ -50,3 +50,8 @@ data Expr
   | For Variable Expr Expr
   | PrependPrefix Expr Expr
   deriving (Show)
+
+data Stmt
+  = Binding Variable Expr
+  | Statement Expr
+  deriving (Show)

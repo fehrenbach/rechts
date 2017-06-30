@@ -2,18 +2,20 @@
 
 module Main where
 
-import Prelude hiding (getLine)
+import Prelude hiding (getLine, readFile)
+import Data.Text.IO (getLine, readFile)
 import Syntax
 import Parser
 import Pretty (printValue, printCode)
 import Data.Monoid
 import Data.Text
-import Data.Text.IO (getLine)
-import qualified Data.Map.Strict as Map
+import Data.Either.Unwrap (fromRight)
+import System.Environment (getArgs)
+import qualified Data.Map.Lazy as Map
 import qualified Data.Vector as V
-import Text.Megaparsec (runParser)
+import Text.Megaparsec (runParser, ParsecT(..), runParserT', State(..), runParserT, parseErrorPretty)
 import System.IO (hFlush, stdout)
-import Control.Monad.State.Strict (evalStateT)
+import Control.Monad.State.Strict (evalStateT, runStateT)
 
 eval :: Env -> Expr -> Either String Value
 eval _ (Val v) = Right v
@@ -196,29 +198,57 @@ trace (For x l b) = do
                 , ("out", For y (Proj "v" tl)
                             (List (V.singleton (Record (Map.fromList [ ("p", Proj "p" (Var y))
                                                                      , ("t", Proj "t" (App (Lam x tb) (Proj "v" (Var y))))])))))
-                ])
+                ]) 
+
+-- This is a huge fucking mess :( I think I actually might want some
+-- sort of über-monad for my state and env and whatnot to live in
+
+repl env pstate = do
+  putStr "rechts> "
+  hFlush stdout
+  l <- getLine
+  case runParser (runStateT wholeExpr pstate) "REPL" l of
+    Left err -> putStrLn (parseErrorPretty err)
+    Right (e, pstate) -> do
+      putStrLn (show e)
+      case eval env e of
+        Left err -> putStrLn ("ERROR: " ++ show err)
+        Right v -> do printValue stdout v
+                      putStrLn ""
+                      case trace e of
+                        Left err -> putStrLn ("TRACE REWRITING ERROR: " ++ show err)
+                        Right t -> do printCode stdout t
+                                      putStrLn ""
+                                      case eval env t of -- Not sure about this env here. Should this be a traced env?
+                                        Left err -> putStrLn ("TRACED EVALUATION ERROR: " ++ show err)
+                                        Right v -> do printValue stdout v
+                                                      putStrLn ""
+                                                      repl env pstate
+
+sLoop :: Env -> [Stmt] -> IO (Either String Env)
+sLoop env s = case s of
+  [] -> return (Right env)
+  ((Binding v e):rest) ->
+    let val = eval (Map.insert v (fromRight val) env) e
+    in case val of
+      Left e -> return (Left e)
+      Right val -> sLoop (Map.insert v val env) rest
+  ((Statement e):rest) ->
+    case eval env e of
+      Left e -> return (Left e)
+      Right val -> do
+        printValue stdout val
+        putStrLn ""
+        sLoop env rest
 
 main :: IO ()
-main = loop
-  where
-    loop = do
-      putStr "rechts> "
-      hFlush stdout
-      l <- getLine
-      case runParser (evalStateT wholeExpr 0) "stdin" l of
-        Left err -> putStrLn (show err)
-        Right e -> do
-          putStrLn (show e)
-          case eval (Map.fromList []) e of
-            Left err -> putStrLn ("ERROR: " ++ show err)
-            Right v -> do printValue stdout v
-                          putStrLn ""
-                          case trace e of
-                            Left err -> putStrLn ("TRACE REWRITING ERROR: " ++ show err)
-                            Right t -> do printCode stdout t
-                                          putStrLn ""
-                                          case eval (Map.fromList []) t of
-                                            Left err -> putStrLn ("TRACED EVALUATION ERROR: " ++ show err)
-                                            Right v -> do printValue stdout v
-                                                          putStrLn ""
-      loop
+main = do
+  fileName <- (!! 0) <$> getArgs
+  fileContents <- readFile fileName
+  case runParser (runStateT toplevel 0) fileName fileContents of
+    Left err -> putStrLn (parseErrorPretty err)
+    Right (statements, varCount) -> do
+      env <- sLoop (Map.fromList []) statements
+      case env of
+        Left err -> putStrLn ("Error during file evaluation: " ++ show err)
+        Right env -> repl env varCount
