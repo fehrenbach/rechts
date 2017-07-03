@@ -27,6 +27,10 @@ eval env (Eq l r) = do
   l <- eval env l
   r <- eval env r
   return (VBool (l == r))
+eval env (And l r) = do
+  (VBool l) <- eval env l
+  (VBool r) <- eval env r
+  return (VBool (l && r))
 eval env (If c t e) = do
   VBool c <- eval env c
   if c
@@ -74,7 +78,7 @@ eval env (For x l e) = case eval env l of
 eval env (PrependPrefix l r) = do
   (VText l) <- eval env l
   (VText r) <- eval env r
-  return (VText $ l <> "/" <> r)
+  return (VText $ l <> "⋅" <> r)
 
 reflect :: Expr -> Expr
 reflect (Val v) = Tag "Val" (Val v)
@@ -98,6 +102,8 @@ reflect (Switch e cs) = Tag "Switch" (Record (Map.fromList [ ("e", reflect e)
 reflect (List es) = Tag "List" (List (V.map reflect es))
 reflect (Eq l r) = Tag "Eq" (Record (Map.fromList [ ("left", reflect l)
                                                   , ("right", reflect r) ]))
+reflect (And l r) = Tag "And" (Record (Map.fromList [ ("left", reflect l)
+                                                    , ("right", reflect r) ]))
 reflect (If c t e) = Tag "If" (Record (Map.fromList [ ("condition", reflect c)
                                                     , ("then", reflect t)
                                                     , ("else", reflect e) ]))
@@ -125,6 +131,12 @@ trace (Eq l r) = do
   rt <- trace r
   tr (Eq l r) "Eq" (rec [ ("left", Proj "t" lt)
                         , ("right", Proj "t" rt)])
+trace (And l r) = do
+  lt <- trace l
+  rt <- trace r
+  tr (And (Proj "v" lt) (Proj "v" rt))
+    "And" (rec [ ("left", Proj "t" lt)
+               , ("right", Proj "t" rt)])
 trace (If c t e) = do
   ct <- trace c
   tt <- trace t

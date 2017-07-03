@@ -39,6 +39,7 @@ data Expr
   | Var Variable
   | Lam Variable Expr
   | Eq Expr Expr
+  | And Expr Expr
   | App Expr Expr
   | Record (Map.Map Text Expr)
   | Proj Text Expr

@@ -60,7 +60,7 @@ fun = do
   return (Lam v e)
 
 int :: Parser Value
-int = VInt . fromInteger <$> L.signed sc L.integer -- this allows spaces between - and the number. Not really sure I want that...
+int = VInt . fromInteger <$> L.signed sc L.integer <* sc -- this allows spaces between - and the number. Not really sure I want that...
 
 stringLit :: Parser Value
 stringLit = VText . pack <$> (char '"' >> manyTill L.charLiteral (char '"'))
@@ -85,8 +85,9 @@ expr = makeExprParser term table
                             l <- identifier
                             return (Proj l)) ]
             , [ InfixL (App <$ return ()) ]
-            , [ InfixR (Union <$ symbol "++") ]
             , [ InfixN (Eq <$ symbol "==") ]
+            , [ InfixR (And <$ symbol "&&") ]
+            , [ InfixR (Union <$ symbol "++") ]
             ]
 
 record :: Parser Expr
