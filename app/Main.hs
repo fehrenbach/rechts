@@ -5,7 +5,7 @@ module Main where
 import Prelude hiding (getLine, readFile)
 import Data.Text.IO (getLine, readFile)
 import Syntax
-import Parser
+import Parser (wholeExpr, toplevel)
 import Pretty (printValue, printCode)
 import Data.Monoid
 import Data.Text
@@ -16,6 +16,14 @@ import qualified Data.Vector as V
 import Text.Megaparsec (runParser, ParsecT(..), runParserT', State(..), runParserT, parseErrorPretty)
 import System.IO (hFlush, stdout)
 import Control.Monad.State.Strict (evalStateT, runStateT)
+
+-- TODO decide what the proper primitive should be
+-- Currently this is by length only, which seems either overkill or dangerous, or both
+-- So far I only drop a one element, always matching prefix
+-- We could just have a dropOnePrefix primitive, or use the argument to check that it is applied correctly.
+doStripPrefix :: Text -> Text -> Text
+doStripPrefix p l =
+  Data.Text.concat $ Prelude.drop (Prelude.length (splitOn "⋅" p)) (splitOn "⋅" l)
 
 eval :: Env -> Expr -> Either String Value
 eval _ (Val v) = Right v
@@ -39,6 +47,9 @@ eval env (If c t e) = do
 eval env (App f x) =
   case (eval env f, eval env x) of
     (Right (VFun var env f), Right x) -> eval (Map.insert var x env) f
+    (Right (VFun var env f), Left e) -> Left $ e ++ " in a function application"
+    (Right notafunction, Right arg) -> Left $ "Tried to apply something that is not a function"
+    
     (_, _) -> Left "error in function application"
 eval env (Record fields) =
   either Left (Right . VRecord) (traverse (eval env) fields)
@@ -53,9 +64,9 @@ eval env (Tag t e) = do
   e' <- eval env e
   return (VTagged t e')
 eval env (Switch e cases) = do
-  (VTagged l v) <- eval env e
+  tv@(VTagged l v) <- eval env e
   case Map.lookup l cases of
-    Nothing -> Left "No match in case"
+    Nothing -> Left $ "No match in case -- matched value: " ++ show tv ++ " cases: " ++ show cases
     Just (var, e) -> eval (Map.insert var v env) e
 eval env (List es) = do
   vs <- traverse (eval env) es
@@ -79,6 +90,30 @@ eval env (PrependPrefix l r) = do
   (VText l) <- eval env l
   (VText r) <- eval env r
   return (VText $ l <> "⋅" <> r)
+eval env (PrefixOf l r) = do
+  (VText l) <- eval env l
+  (VText r) <- eval env r
+  return (VBool $ isPrefixOf l r)
+eval env (StripPrefix p e) = do
+  (VText p) <- eval env p
+  (VText e) <- eval env e
+  return (VText $ doStripPrefix p e)
+eval env (Trace e) = do
+  e' <- trace e
+  v <- eval env e' -- in what env?
+  return v
+eval env (RecordMap r kv vv e) = do
+  (VRecord r) <- eval env r
+  r' <- Map.traverseWithKey (\l v -> eval (Map.insert kv (VText l) (Map.insert vv v env)) e) r
+  return (VRecord r')
+eval env (DynProj var@(NamedVar v) r) = do
+  rec@(VRecord r) <- eval env r
+  case Map.lookup var env of
+    Just (VText l) -> case Map.lookup l r of
+      Nothing -> Left $ "Can't find label " ++ show l ++ " in record " ++ show rec
+      Just v -> Right v
+    Just foo -> Left $ "looking up label variable " ++ show v ++ " returned something other than text: " ++ show foo
+    Nothing -> Left $ "Unbound label variable " ++ show v 
 
 reflect :: Expr -> Expr
 reflect (Val v) = Tag "Val" (Val v)
@@ -179,8 +214,8 @@ trace (Switch e cases) = do
                                , ("t", Switch e cases') ]))
 trace (List es) = do
   tes <- traverse trace es
-  let labelledValues = V.imap (\i x -> Record (Map.fromList [("p", Val (VText (pack (show i)))), ("v", x)])) es
-  let labelledTraces = V.imap (\i e -> Record (Map.fromList [("p", Val (VText (pack (show i)))), ("e", e)])) tes
+  let labelledValues = V.imap (\i e -> Record (Map.fromList [("p", Val (VText (pack (show i)))), ("v", (Proj "v" e))])) tes
+  let labelledTraces = V.imap (\i e -> Record (Map.fromList [("p", Val (VText (pack (show i)))), ("t", (Proj "t" e))])) tes
   let plain = V.map id tes
   tr (List labelledValues) "List" (List labelledTraces)
   -- return (Tag "List" (List plain))
@@ -227,15 +262,16 @@ repl env pstate = do
         Left err -> putStrLn ("ERROR: " ++ show err)
         Right v -> do printValue stdout v
                       putStrLn ""
-                      case trace e of
-                        Left err -> putStrLn ("TRACE REWRITING ERROR: " ++ show err)
-                        Right t -> do printCode stdout t
-                                      putStrLn ""
-                                      case eval env t of -- Not sure about this env here. Should this be a traced env?
-                                        Left err -> putStrLn ("TRACED EVALUATION ERROR: " ++ show err)
-                                        Right v -> do printValue stdout v
-                                                      putStrLn ""
-                                                      repl env pstate
+  repl env pstate
+                      -- case trace e of
+                      --   Left err -> putStrLn ("TRACE REWRITING ERROR: " ++ show err)
+                      --   Right t -> do printCode stdout t
+                      --                 putStrLn ""
+                      --                 case eval env t of -- Not sure about this env here. Should this be a traced env?
+                      --                   Left err -> putStrLn ("TRACED EVALUATION ERROR: " ++ show err)
+                      --                   Right v -> do printValue stdout v
+                      --                                 putStrLn ""
+                      --                                 
 
 sLoop :: Env -> [Stmt] -> IO (Either String Env)
 sLoop env s = case s of

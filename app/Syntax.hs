@@ -43,6 +43,7 @@ data Expr
   | App Expr Expr
   | Record (Map.Map Text Expr)
   | Proj Text Expr
+  | DynProj Variable Expr
   | Tag Text Expr
   | Switch Expr (Map.Map Text (Variable, Expr))
   | If Expr Expr Expr
@@ -50,6 +51,10 @@ data Expr
   | Union Expr Expr
   | For Variable Expr Expr
   | PrependPrefix Expr Expr
+  | PrefixOf Expr Expr
+  | StripPrefix Expr Expr
+  | Trace Expr
+  | RecordMap Expr Variable Variable Expr
   deriving (Show)
 
 data Stmt

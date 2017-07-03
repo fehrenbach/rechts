@@ -31,7 +31,7 @@ symbol = L.symbol sc
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
 
-rws = ["λ", "switch", "case", "if", "then", "else"]
+rws = ["λ", "switch", "case", "if", "then", "else", "trace", "prefixOf", "strip", "rmap", "with" ]
 
 identifier :: Parser Text
 identifier = pack <$> (lexeme . try) (p >>= check)
@@ -60,17 +60,23 @@ fun = do
   return (Lam v e)
 
 int :: Parser Value
-int = VInt . fromInteger <$> L.signed sc L.integer <* sc -- this allows spaces between - and the number. Not really sure I want that...
+int = VInt . fromInteger <$> L.signed sc L.integer -- this allows spaces between - and the number. Not really sure I want that...
 
 stringLit :: Parser Value
 stringLit = VText . pack <$> (char '"' >> manyTill L.charLiteral (char '"'))
 
 constant :: Parser Expr
-constant = Val <$> (int <|> stringLit)
+constant = Val <$> (int <|> stringLit) <* sc
 
 term :: Parser Expr
 term =
-  try constant <|> fun <|> record <|> list <|> switch <|> for <|> try var <|> constructor <|> ifthenelse <|> parens expr
+  try constant <|> fun <|> record <|> list <|> switch <|> for <|> trace <|> try var <|> constructor <|> ifthenelse <|> rmap <|> parens expr
+
+trace :: Parser Expr
+trace = do
+  try $ symbol "trace"
+  e <- expr
+  return (Trace e)
 
 wholeExpr :: Parser Expr
 wholeExpr = do
@@ -83,11 +89,16 @@ expr = makeExprParser term table
   where
     table = [ [ Postfix (do symbol "."
                             l <- identifier
-                            return (Proj l)) ]
+                            return (Proj l))
+              , Postfix (do symbol "!"
+                            l <- variable
+                            return (DynProj l)) ]
             , [ InfixL (App <$ return ()) ]
             , [ InfixN (Eq <$ symbol "==") ]
             , [ InfixR (And <$ symbol "&&") ]
             , [ InfixR (Union <$ symbol "++") ]
+            , [ InfixN (PrefixOf <$ symbol "prefixOf" )
+              , InfixN (StripPrefix <$ symbol "strip") ]
             ]
 
 record :: Parser Expr
@@ -152,6 +163,20 @@ ifthenelse = do
   e <- expr
   return (If c t e)
 
+rmap :: Parser Expr
+rmap = do
+  try $ symbol "rmap"
+  r <- expr
+  symbol "with"
+  symbol "("
+  k <- variable
+  symbol "="
+  v <- variable
+  symbol ")"
+  symbol "=>"
+  e <- expr
+  return (RecordMap r k v e)
+
 binding :: Parser Stmt
 binding = do
   v <- variable
@@ -167,4 +192,4 @@ statement = do
   return (Statement e)
 
 toplevel :: Parser [Stmt]
-toplevel = some (try binding <|> statement)
+toplevel = some (try binding <|> statement) <* eof
