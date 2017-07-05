@@ -9,11 +9,36 @@ eTours = [ { name = "EdinTours", destination = "Edinburgh", type = "bus", price 
 boatTours =
   for (a <- agencies) for (e <- eTours) if (a.name == e.name && e.type == "boat") then [{name = e.name, phone = a.phone}] else [] ;
 
-// for (a <- [ { name = "EdinTours", basedin = "Edinburgh", phone = "412 1200"}, { name = "Burns's", basedin = "Glasgow", phone = "607 3000"}]) for (e <- [ { name = "EdinTours", destination = "Edinburgh", type = "bus", price = 20}, { name = "EdinTours", destination = "Loch Ness", type = "bus", price = 50}, { name = "EdinTours", destination = "Loch Ness", type = "boat", price = 200}, { name = "EdinTours", destination = "Firth of Forth", type = "boat", price = 50}, { name = "Burns's", destination = "Islay", type = "boat", price = 100}, { name = "Burns's", destination = "Mallaig", type = "train", price = 40} ]) if (a.name == e.name && e.type == "boat") then [{name = e.name, phone = a.phone}] else []
+q = for (a <- [ { name = "EdinTours", basedin = "Edinburgh", phone = "412 1200"}, { name = "Burns's", basedin = "Glasgow", phone = "607 3000"}]) for (e <- [ { name = "EdinTours", destination = "Edinburgh", type = "bus", price = 20}, { name = "EdinTours", destination = "Loch Ness", type = "bus", price = 50}, { name = "EdinTours", destination = "Loch Ness", type = "boat", price = 200}, { name = "EdinTours", destination = "Firth of Forth", type = "boat", price = 50}, { name = "Burns's", destination = "Islay", type = "boat", price = 100}, { name = "Burns's", destination = "Mallaig", type = "train", price = 40} ]) if (a.name == e.name && e.type == "boat") then [{name = e.name, phone = a.phone}] else [];
+
+// lookup = \env.\var.
+//   for (v <- env)
+//     if (v.name == var) then [v.value] else [];
+
+// value = \env.\tv.
+//  switch tv.t
+//    case Val foo => tv.v
+//    case Lam lt => tv.v
+//    case Var vname => lookup env vname
+//    case List lt =>
+//      for (t <- lt)
+//        for (v <- tv.v)
+//          if (t.p prefixOf v.p) then [value env {t=t.t, v=v.v}] else []
+//    case Union ut =>
+//      (value env {t=ut.left, v = for (v <- tv.v) if ("l" prefixOf v.p) then [{p = "l" strip v.p, v=v.v}] else []})
+//      ++ (value env {t=ut.right, v = for (v <- tv.v) if ("r" prefixOf v.p) then [{p = "r" strip v.p, v=v.v}] else []})
+//    case Record rt =>
+//      rmap tv.v with (k = v) => value env {t=rt!k, v = v}
+//    ;
 
 value = \tv.
  switch tv.t
-   case Val foo => tv.v
+   case Int i => i
+   case Bool b => b
+   case Text t => t
+   case Lam lt => tv.v
+   case App at =>
+     (value at.fun) (value at.arg)
    case List lt =>
      for (t <- lt)
        for (v <- tv.v)
@@ -22,4 +47,9 @@ value = \tv.
      (value {t=ut.left, v = for (v <- tv.v) if ("l" prefixOf v.p) then [{p = "l" strip v.p, v=v.v}] else []})
      ++ (value {t=ut.right, v = for (v <- tv.v) if ("r" prefixOf v.p) then [{p = "r" strip v.p, v=v.v}] else []})
    case Record rt =>
-     rmap tv.v with (k = v) => value {t=rt!k, v = v};
+     rmap tv.v with (k = v) => value {t=rt!k, v = v}
+   case Proj pt =>
+     (value pt.rec)!pt.lab
+   ;
+
+t = trace {a=5}.a;

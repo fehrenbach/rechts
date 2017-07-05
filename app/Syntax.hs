@@ -9,35 +9,15 @@ data Variable
   | GeneratedVar Int
   deriving (Eq, Ord, Show)
 
-type Env = Map.Map Variable Value
+type Env = Map.Map Variable Expr
 
-data Value
+data Expr
   = VBool Bool
   | VInt Int
   | VText Text
-  | VFun Variable Env Expr
-  | VRecord (Map.Map Text Value)
-  | VTagged Text Value
-  | VVector (V.Vector Value)
-  deriving (Show)
-
-instance Eq Value where
-  (VBool l) == (VBool r) = l == r
-  (VInt l) == (VInt r) = l == r
-  (VText l) == (VText r) = l == r
-  (VRecord l) == (VRecord r) = l == r
-  (VVector l) == (VVector r) = l == r
-  (VTagged lt l) == (VTagged rt r) = lt == rt && l == r
-  (VFun _ _ _) == _ = error "Can't compare functions"
-  _ == (VFun _ _ _) = error "Can't compare functions"
-  _ == _ = False
-
--- Using Map and Vector here was a terrible idea
--- Lists are so much easier
-data Expr
-  = Val Value
   | Var Variable
   | Lam Variable Expr
+  | Closure Variable Env Expr
   | Eq Expr Expr
   | And Expr Expr
   | App Expr Expr
@@ -55,7 +35,7 @@ data Expr
   | StripPrefix Expr Expr
   | Trace Expr
   | RecordMap Expr Variable Variable Expr
-  deriving (Show)
+  deriving (Show, Eq)
 
 data Stmt
   = Binding Variable Expr

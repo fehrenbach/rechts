@@ -59,14 +59,14 @@ fun = do
   e <- expr
   return (Lam v e)
 
-int :: Parser Value
+int :: Parser Expr
 int = VInt . fromInteger <$> L.signed sc L.integer -- this allows spaces between - and the number. Not really sure I want that...
 
-stringLit :: Parser Value
+stringLit :: Parser Expr
 stringLit = VText . pack <$> (char '"' >> manyTill L.charLiteral (char '"'))
 
 constant :: Parser Expr
-constant = Val <$> (int <|> stringLit) <* sc
+constant = (int <|> stringLit) <* sc
 
 term :: Parser Expr
 term =
