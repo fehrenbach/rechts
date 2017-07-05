@@ -314,7 +314,6 @@ beta env (For v i e) = do
   i <- beta env i
   e <- beta ((v, (Var v)):env) e
   beta env $ For v i e -- Am I sure this always terminates?
-beta env (Lam _ _) = undefined
 beta env (And l r) = do
   l <- beta env l
   r <- beta env r
@@ -342,6 +341,7 @@ beta env (Union l r) = do
   case (l', r') of
     (List l, List r) -> return $ List (l V.++ r)
     (_, _) -> return $ Union l' r'
+beta env (Lam _ _) = undefined
 beta env (Closure _ _ _) = undefined
 beta env (PrependPrefix _ _) = undefined
 beta env (PrefixOf _ _) = undefined

@@ -32,7 +32,7 @@ prettyCode (List es) =
   brackets (align (ke (V.toList es)))
   where
     ke [] = empty
-    ke [e] = prettyCode e
+    ke [e] = group $ prettyCode e
     ke (e:es) = group (prettyCode e) <> "," <$> ke es
 prettyCode (Tag t e) = parens $ align $ green (pretty (unpack t)) </> prettyCode e
 prettyCode (Switch e cs) = hang 2 $ magenta "switch" <+> prettyCode e <$> cases (Map.toAscList cs)
