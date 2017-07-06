@@ -283,15 +283,22 @@ beta env (VText t) = return (VText t)
 beta env (Var v) = case Prelude.lookup v env of
   Just v -> Right v
   Nothing -> Left $ "unbound variable " ++ show v
-beta env (App (Lam v body) arg) = do
-  arg <- beta env arg
-  beta ((v, arg):env) body
-beta env (App (Closure v cenv body) arg) = do
-  arg <- beta env arg
-  beta ((v, arg) : Map.toList cenv) body
 beta env (App f arg) = do
-  f' <- beta env f
-  beta env (App f' arg)
+  f <- beta env f
+  arg <- beta env arg
+  case f of
+    Lam v body -> beta ((v, arg):env) body -- can this even happen?
+    Closure v cenv body -> beta ((v, arg) : Map.toList cenv) body -- not sure about this
+    _ -> Left $ "not a function " ++ show f
+-- beta env (App (Lam v body) arg) = do
+  -- arg <- beta env arg
+  -- beta ((v, arg):env) body
+-- beta env (App (Closure v cenv body) arg) = do
+  -- arg <- beta env arg
+  -- beta ((v, arg) : Map.toList cenv) body
+-- beta env (App f arg) = do
+  -- f' <- beta env f
+  -- beta env (App f' arg)
 beta env (Proj l e) = do
   e <- beta env e
   case e of
