@@ -31,7 +31,7 @@ symbol = L.symbol sc
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
 
-rws = ["λ", "switch", "case", "if", "then", "else", "trace", "prefixOf", "strip", "rmap", "with" ]
+rws = ["λ", "switch", "case", "if", "then", "else", "trace", "prefixOf", "strip", "rmap", "with", "table" ]
 
 identifier :: Parser Text
 identifier = pack <$> (lexeme . try) (p >>= check)
@@ -68,9 +68,39 @@ stringLit = VText . pack <$> (char '"' >> manyTill L.charLiteral (char '"'))
 constant :: Parser Expr
 constant = (int <|> stringLit) <* sc
 
+type' :: Parser Type
+type' = intt <|> boolt <|> textt <|> listt <|> recordt
+  where intt = do
+          symbol "Int"
+          return IntT
+        boolt = do
+          symbol "Bool"
+          return BoolT
+        textt = do
+          symbol "Text"
+          return TextT
+        listt = do
+          symbol "["
+          t <- type'
+          symbol "]"
+          return $ VectorT t
+        recordt = (RecordT . Map.fromList) <$> between (symbol "{") (symbol "}") (sepBy labelTypePair (symbol ","))
+        labelTypePair = do
+          l <- identifier
+          symbol ":"
+          e <- type'
+          return (l, e)
+
+table :: Parser Expr
+table = do
+  try $ symbol "table"
+  name <- pack <$> (char '"' >> manyTill L.charLiteral (char '"')) <* sc
+  ty <- type'
+  return (Table name ty)
+
 term :: Parser Expr
 term =
-  try constant <|> fun <|> record <|> list <|> switch <|> for <|> trace <|> try var <|> constructor <|> ifthenelse <|> rmap <|> parens expr
+  try constant <|> fun <|> record <|> list <|> switch <|> for <|> trace <|> table <|> try var <|> constructor <|> ifthenelse <|> rmap <|> parens expr
 
 trace :: Parser Expr
 trace = do

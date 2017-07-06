@@ -52,8 +52,8 @@ eval env (App f x) =
   case (eval env f, eval env x) of
     (Right (Closure var fenv body), Right x) -> eval (Map.insert var x fenv) body
     (Right notafunction, Right arg) -> Left $ "Tried to apply something that is not a closure"
-    (Left err, _) -> Left err
-    (_, Left err) -> Left err
+    (Left err, _) -> Left $ "error in function application (fun)" ++ err
+    (_, Left err) -> Left $ "error in function application (arg)" ++ err
     (_, _) -> Left "error in function application"
 eval env (Record fields) =
   Record <$> traverse (eval env) fields
@@ -62,8 +62,8 @@ eval env (Proj l r) =
     Right (Record v) -> case Map.lookup l v of
       Nothing -> Left $ "Record " ++ show v ++ " does not have label " ++ unpack l
       Just f -> Right f
-    Right v -> Left $ "Not a record: " ++ show v
-    e -> e
+    Right v -> Left $ "Not a record: " ++ show v ++ " (projecting to label " ++ show l ++ ")"
+    Left e -> Left $ "error in projection: " ++ e
 eval env (Tag t e) = do
   e' <- eval env e
   return (Tag t e')
@@ -117,9 +117,13 @@ eval env (DynProj var@(NamedVar v) r) = do
       Nothing -> Left $ "Can't find label " ++ show l ++ " in record " ++ show rec
       Just v -> Right v
     Just foo -> Left $ "looking up label variable " ++ show v ++ " returned something other than text: " ++ show foo
-    Nothing -> Left $ "Unbound label variable " ++ show v 
+    Nothing -> Left $ "Unbound label variable " ++ show v
+eval env (Table _ _) = Right (List mempty) -- TODO
 
 reflect :: Expr -> Expr
+reflect (VBool b) = Tag "Bool" (VBool b)
+reflect (VInt i) = Tag "Int" (VInt i)
+reflect (VText t) = Tag "Text" (VText t)
 reflect (Var v) = Tag "Var" (VText (pack (show v))) -- need a better rep for this
 reflect (Lam v e) = Tag "Lam" (Record (Map.fromList [ ("var", VText (pack (show v))) -- need a better rep for this
                                                     , ("body", reflect e) ]))
@@ -148,6 +152,7 @@ reflect (If c t e) = Tag "If" (Record (Map.fromList [ ("condition", reflect c)
 reflect (For v l e) = Tag "For" (Record (Map.fromList [ ("var", VText (pack (show v)))
                                                       , ("in", reflect l)
                                                       , ("body", reflect e) ]))
+reflect (Table n t) = Tag "Table" (Record (Map.fromList [ ("name", VText n) ]))
 
 tr :: Expr -> Text -> Expr -> Either a Expr
 tr v c t =
@@ -250,7 +255,10 @@ trace (For x l b) = do
                 , ("out", For y (Proj "v" tl)
                             (List (V.singleton (Record (Map.fromList [ ("p", Proj "p" (Var y))
                                                                      , ("t", Proj "t" (App (Lam x tb) (Proj "v" (Var y))))])))))
-                ]) 
+                ])
+trace tbl@(Table n _) = do
+  tr tbl "Table" (VText n)
+  
 
 -- This is a huge fucking mess :( I think I actually might want some
 -- sort of über-monad for my state and env and whatnot to live in
@@ -284,13 +292,13 @@ beta env (App (Closure v cenv body) arg) = do
 beta env (App f arg) = do
   f' <- beta env f
   beta env (App f' arg)
-beta env (Proj l (Record flds)) =
-  case Map.lookup l flds of
-    Just e -> beta env e
-    Nothing -> Left "label not found"
 beta env (Proj l e) = do
-  e' <- beta env e
-  beta env (Proj l e')
+  e <- beta env e
+  case e of
+    Record flds -> case Map.lookup l flds of
+      Just e -> beta env e
+      Nothing -> Left "label not found"
+    _ -> Left $ "Not a record in projection: " ++ show e
 beta env (If a b c) = do
   a' <- beta env a
   b' <- beta env b
@@ -299,7 +307,6 @@ beta env (If a b c) = do
     VBool True -> return b'
     VBool False -> return c'
     _ -> return $ If a' b' c'
--- TODO we could do better here, e.g.  if (5 == 7) then {a=7}.a else {b=9}.b  could evaluate to 9, instead of  if (5 == 7) then 7 else 9
 beta env (Eq a b) = do
   a' <- beta env a
   b' <- beta env b
@@ -307,13 +314,15 @@ beta env (Eq a b) = do
     Just True -> return $ VBool True
     Just False -> return $ VBool False
     Nothing -> return $ Eq a' b'
-beta env (For v (List ls) e) = do
-  es <- traverse (\x -> beta ((v, x) : env) e) ls
-  beta env (Prelude.foldl Union (List mempty) es)
 beta env (For v i e) = do
   i <- beta env i
-  e <- beta ((v, (Var v)):env) e
-  beta env $ For v i e -- Am I sure this always terminates?
+  case i of
+    (List ls) -> do
+      es <- traverse (\x -> beta ((v, x) : env) e) ls
+      beta env (Prelude.foldl Union (List mempty) es)
+    _ -> do
+      e <- beta ((v, (Var v)):env) e
+      return $ For v i e
 beta env (And l r) = do
   l <- beta env l
   r <- beta env r
@@ -329,10 +338,12 @@ beta env (DynProj _ _) = undefined
 beta env (Tag t e) = do
   Tag t <$> beta env e
 beta env (Switch e cs) = do
-  (Tag t v) <- beta env e
-  case Map.lookup t cs of
-    Just (var, c) -> beta ((var, v):env) c
-    Nothing -> Left $ "No case for constructor " ++ show t
+  e <- beta env e
+  case e of
+    (Tag t v) -> case Map.lookup t cs of
+      Just (var, c) -> beta ((var, v):env) c
+      Nothing -> Left $ "No case for constructor " ++ show t
+    e -> Left $ "error in switch: " ++ show e
 beta env (List es) =
   List <$> traverse (beta env) es
 beta env (Union l r) = do
@@ -341,12 +352,17 @@ beta env (Union l r) = do
   case (l', r') of
     (List l, List r) -> return $ List (l V.++ r)
     (_, _) -> return $ Union l' r'
+beta env tbl@(Table n t) = Right tbl
+beta env (Trace e) = do
+  e' <- trace e
+  v <- beta env e' -- in what env?
+  return v
+-- beta env otherwise = Right otherwise
 beta env (Lam _ _) = undefined
 beta env (Closure _ _ _) = undefined
 beta env (PrependPrefix _ _) = undefined
 beta env (PrefixOf _ _) = undefined
 beta env (StripPrefix _ _) = undefined
-
 
 beta' env =
   beta (Map.toList env)

@@ -9,7 +9,9 @@ eTours = [ { name = "EdinTours", destination = "Edinburgh", type = "bus", price 
 boatTours =
   for (a <- agencies) for (e <- eTours) if (a.name == e.name && e.type == "boat") then [{name = e.name, phone = a.phone}] else [] ;
 
-q = for (a <- [ { name = "EdinTours", basedin = "Edinburgh", phone = "412 1200"}, { name = "Burns's", basedin = "Glasgow", phone = "607 3000"}]) for (e <- [ { name = "EdinTours", destination = "Edinburgh", type = "bus", price = 20}, { name = "EdinTours", destination = "Loch Ness", type = "bus", price = 50}, { name = "EdinTours", destination = "Loch Ness", type = "boat", price = 200}, { name = "EdinTours", destination = "Firth of Forth", type = "boat", price = 50}, { name = "Burns's", destination = "Islay", type = "boat", price = 100}, { name = "Burns's", destination = "Mallaig", type = "train", price = 40} ]) if (a.name == e.name && e.type == "boat") then [{name = e.name, phone = a.phone}] else [];
+qv = for (a <- [ { name = "EdinTours", basedin = "Edinburgh", phone = "412 1200"}, { name = "Burns's", basedin = "Glasgow", phone = "607 3000"}]) for (e <- [ { name = "EdinTours", destination = "Edinburgh", type = "bus", price = 20}, { name = "EdinTours", destination = "Loch Ness", type = "bus", price = 50}, { name = "EdinTours", destination = "Loch Ness", type = "boat", price = 200}, { name = "EdinTours", destination = "Firth of Forth", type = "boat", price = 50}, { name = "Burns's", destination = "Islay", type = "boat", price = 100}, { name = "Burns's", destination = "Mallaig", type = "train", price = 40} ]) if (a.name == e.name && e.type == "boat") then [{name = e.name, phone = a.phone}] else [];
+
+qt = for (a <- table "agencies" {name: Text, basedin: Text, phone: Text}) for (e <- table "externalTours" {name: Text, destination: Text, price: Int}) if (a.name == e.name && e.type == "Boat") then [{name = e.name, phone = a.phone}] else [];
 
 // lookup = \env.\var.
 //   for (v <- env)
@@ -48,8 +50,8 @@ value = \tv.
      ++ (value {t=ut.right, v = for (v <- tv.v) if ("r" prefixOf v.p) then [{p = "r" strip v.p, v=v.v}] else []})
    case Record rt =>
      rmap tv.v with (k = v) => value {t=rt!k, v = v}
-   case Proj pt =>
-     (value pt.rec)!pt.lab
+   // case Proj pt =>
+     // (value pt.rec)!pt.lab // I don't think this works, the right hand side of ! is looked up in some environment, not evaluated
    ;
 
-t = trace {a=5}.a;
+t = trace 1;

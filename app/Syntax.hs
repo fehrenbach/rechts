@@ -11,6 +11,14 @@ data Variable
 
 type Env = Map.Map Variable Expr
 
+data Type
+  = BoolT
+  | IntT
+  | TextT
+  | VectorT Type
+  | RecordT (Map.Map Text Type)
+  deriving (Show, Eq)
+
 data Expr
   = VBool Bool
   | VInt Int
@@ -35,6 +43,7 @@ data Expr
   | StripPrefix Expr Expr
   | Trace Expr
   | RecordMap Expr Variable Variable Expr
+  | Table Text Type
   deriving (Show, Eq)
 
 data Stmt
