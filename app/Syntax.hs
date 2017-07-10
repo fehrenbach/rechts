@@ -7,6 +7,7 @@ import qualified Data.Map.Strict as Map
 data Variable
   = NamedVar Text
   | GeneratedVar Int
+  | UntraceVar
   deriving (Eq, Ord, Show)
 
 type Env = Map.Map Variable Expr
@@ -31,7 +32,7 @@ data Expr
   | App Expr Expr
   | Record (Map.Map Text Expr)
   | Proj Text Expr
-  | DynProj Variable Expr
+  | DynProj Expr Expr -- this is flipped for little good reason: a!b == DynProj b a
   | Tag Text Expr
   | Switch Expr (Map.Map Text (Variable, Expr))
   | If Expr Expr Expr
@@ -44,6 +45,8 @@ data Expr
   | Trace Expr
   | RecordMap Expr Variable Variable Expr
   | Table Text Type
+  | Untrace Expr
+  | Self Expr
   deriving (Show, Eq)
 
 data Stmt

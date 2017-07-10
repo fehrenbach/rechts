@@ -110,15 +110,18 @@ eval env (RecordMap r kv vv e) = do
   (Record r) <- eval env r
   r' <- Map.traverseWithKey (\l v -> eval (Map.insert kv (VText l) (Map.insert vv v env)) e) r
   return (Record r')
-eval env (DynProj var@(NamedVar v) r) = do
+eval env (DynProj l r) = do
   rec@(Record r) <- eval env r
-  case Map.lookup var env of
-    Just (VText l) -> case Map.lookup l r of
-      Nothing -> Left $ "Can't find label " ++ show l ++ " in record " ++ show rec
-      Just v -> Right v
-    Just foo -> Left $ "looking up label variable " ++ show v ++ " returned something other than text: " ++ show foo
-    Nothing -> Left $ "Unbound label variable " ++ show v
+  (VText l) <- eval env l
+  case Map.lookup l r of
+    Nothing -> Left $ "Can't find (dynamic) label " ++ show l ++ " in record " ++ show rec
+    Just v -> Right v
 eval env (Table _ _) = Right (List mempty) -- TODO
+eval env (Untrace e) = eval (Map.insert UntraceVar e env) e
+eval env (Self _) = -- TODO bindings
+  case Map.lookup UntraceVar env of
+    Just e -> eval env e
+    Nothing -> Left $ "Untrace variable is unbound -- are you inside an Untrace block?"
 
 reflect :: Expr -> Expr
 reflect (VBool b) = Tag "Bool" (VBool b)
@@ -258,7 +261,6 @@ trace (For x l b) = do
                 ])
 trace tbl@(Table n _) = do
   tr tbl "Table" (VText n)
-  
 
 -- This is a huge fucking mess :( I think I actually might want some
 -- sort of über-monad for my state and env and whatnot to live in
@@ -341,7 +343,6 @@ beta env (And l r) = do
     _ -> return $ And l r
 beta env (Record es) =
   Record <$> traverse (beta env) es
-beta env (DynProj _ _) = undefined
 beta env (Tag t e) = do
   Tag t <$> beta env e
 beta env (Switch e cs) = do
@@ -365,11 +366,32 @@ beta env (Trace e) = do
   v <- beta env e' -- in what env?
   return v
 -- beta env otherwise = Right otherwise
-beta env (Lam _ _) = undefined
+beta env (Lam v e) = Right (Lam v e) -- not so sure about this one...
 beta env (Closure _ _ _) = undefined
 beta env (PrependPrefix _ _) = undefined
 beta env (PrefixOf _ _) = undefined
 beta env (StripPrefix _ _) = undefined
+beta env (DynProj l r) = do
+  VText l' <- beta env l
+  r' <- beta env r
+  case r' of
+    Record els -> case Map.lookup l' els of
+      Just e -> beta env e
+      Nothing -> Left "label not found"
+    _ -> Left $ "Not a record in dyn projection: " ++ show r
+  -- DynProj <$> beta env l <*> beta env r -- TODO what do we really need to do here?
+beta env rm@(RecordMap r kv vv e) = do
+  r' <- beta env r
+  case r' of
+    Record els -> do
+      els' <- Map.traverseWithKey (\l el -> beta (insert kv (VText l) (insert vv el env)) e) els
+      return $ Record els'
+    _ -> Left "not a record in rmap"
+  where insert k v m = (k,v):m
+  -- return (RecordMap r' kv vv e)
+beta env (Untrace _) = undefined
+beta env (Self _) =
+  maybe (Left "Unbound SELF") (beta env) $ lookup UntraceVar env
 
 beta' env =
   beta (Map.toList env)

@@ -31,7 +31,7 @@ symbol = L.symbol sc
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
 
-rws = ["λ", "switch", "case", "if", "then", "else", "trace", "prefixOf", "strip", "rmap", "with", "table" ]
+rws = ["λ", "switch", "case", "if", "then", "else", "trace", "prefixOf", "strip", "rmap", "with", "table", "untrace", "self" ]
 
 identifier :: Parser Text
 identifier = pack <$> (lexeme . try) (p >>= check)
@@ -100,7 +100,19 @@ table = do
 
 term :: Parser Expr
 term =
-  try constant <|> fun <|> record <|> list <|> switch <|> for <|> trace <|> table <|> try var <|> constructor <|> ifthenelse <|> rmap <|> parens expr
+  try constant <|> fun <|> record <|> list <|> switch <|> for <|> trace <|> table <|> try var <|> constructor <|> ifthenelse <|> rmap <|> untrace <|> self <|> parens expr
+
+untrace :: Parser Expr
+untrace = do
+  try $ symbol "untrace"
+  e <- expr
+  return (Untrace e)
+
+self :: Parser Expr
+self = do
+  try $ symbol "self"
+  l <- list
+  return (Self l)
 
 trace :: Parser Expr
 trace = do
@@ -119,10 +131,8 @@ expr = makeExprParser term table
   where
     table = [ [ Postfix (do symbol "."
                             l <- identifier
-                            return (Proj l))
-              , Postfix (do symbol "!"
-                            l <- variable
-                            return (DynProj l)) ]
+                            return (Proj l)) ]
+            , [ InfixL (flip DynProj <$ symbol "!") ]
             , [ InfixL (App <$ return ()) ]
             , [ InfixN (Eq <$ symbol "==") ]
             , [ InfixR (And <$ symbol "&&") ]
