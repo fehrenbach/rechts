@@ -378,17 +378,20 @@ beta env (DynProj l r) = do
     Record els -> case Map.lookup l' els of
       Just e -> beta env e
       Nothing -> Left "label not found"
+    -- We might need to do something fancy here, if the argument does
+    -- not happen to normalize to a record immediately.
     _ -> Left $ "Not a record in dyn projection: " ++ show r
-  -- DynProj <$> beta env l <*> beta env r -- TODO what do we really need to do here?
 beta env rm@(RecordMap r kv vv e) = do
   r' <- beta env r
   case r' of
     Record els -> do
       els' <- Map.traverseWithKey (\l el -> beta (insert kv (VText l) (insert vv el env)) e) els
       return $ Record els'
+    -- If arg normalizes to a record all is well, but I'm not sure
+    -- this is always true. I think we might need to do this based on
+    -- types somehow?
     _ -> Left "not a record in rmap"
   where insert k v m = (k,v):m
-  -- return (RecordMap r' kv vv e)
 beta env (Untrace _) = undefined
 beta env (Self _) =
   maybe (Left "Unbound SELF") (beta env) $ lookup UntraceVar env
