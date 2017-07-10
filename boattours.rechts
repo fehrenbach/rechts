@@ -59,8 +59,16 @@ t = trace 1;
 value = untrace \tv.
   switch tv.t
     case Int i => i
-    case Record rt =>
-      rmap tv.v with (k = v) => self [] {t=rt!k, v=v}
-    case Proj pt =>
-      ((self []) pt.rec)!pt.lab
+    case List lt =>
+      for (t <- lt)
+        for (v <- tv.v)
+          if (t.p prefixOf v.p) then [self [] {t=t.t, v=v.v}] else []
+   case Union ut =>
+     (self [] {t=ut.left, v = for (v <- tv.v) if ("l" prefixOf v.p) then [{p = "l" strip v.p, v=v.v}] else []})
+     ++ (self [] {t=ut.right, v = for (v <- tv.v) if ("r" prefixOf v.p) then [{p = "r" strip v.p, v=v.v}] else []})
+   case For ft => "FOR"
+   case Record rt =>
+     rmap tv.v with (k = v) => self [] {t=rt!k, v=v}
+   case Proj pt =>
+     ((self []) pt.rec)!pt.lab
 ;

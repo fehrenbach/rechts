@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, TupleSections #-}
+{-# LANGUAGE OverloadedStrings, TupleSections, FlexibleContexts #-}
 
 module Main where
 
@@ -16,7 +16,8 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Vector as V
 import Text.Megaparsec (runParser, ParsecT(..), runParserT', State(..), runParserT, parseErrorPretty)
 import System.IO (hFlush, stdout)
-import Control.Monad.State.Strict (evalStateT, runStateT)
+import Control.Monad.State.Strict (evalStateT, runStateT, MonadState, get, put)
+import Control.Monad.Except (MonadError, throwError, runExceptT, runExcept)
 
 -- TODO decide what the proper primitive should be
 -- Currently this is by length only, which seems either overkill or dangerous, or both
@@ -103,7 +104,7 @@ eval env (StripPrefix p e) = do
   (VText e) <- eval env e
   return (VText $ doStripPrefix p e)
 eval env (Trace e) = do
-  e' <- trace e
+  e' <- evalStateT (trace e) 2000 -- TODO
   v <- eval env e' -- in what env?
   return v
 eval env (RecordMap r kv vv e) = do
@@ -123,12 +124,15 @@ eval env (Self _) = -- TODO bindings
     Just e -> eval env e
     Nothing -> Left $ "Untrace variable is unbound -- are you inside an Untrace block?"
 
+reflectVar :: Variable -> Expr
+reflectVar v = VText (pack (show v)) -- TODO make better
+
 reflect :: Expr -> Expr
 reflect (VBool b) = Tag "Bool" (VBool b)
 reflect (VInt i) = Tag "Int" (VInt i)
 reflect (VText t) = Tag "Text" (VText t)
-reflect (Var v) = Tag "Var" (VText (pack (show v))) -- need a better rep for this
-reflect (Lam v e) = Tag "Lam" (Record (Map.fromList [ ("var", VText (pack (show v))) -- need a better rep for this
+reflect (Var v) = Tag "Var" (reflectVar v)
+reflect (Lam v e) = Tag "Lam" (Record (Map.fromList [ ("var", reflectVar v)
                                                     , ("body", reflect e) ]))
 reflect (App f a) = Tag "App" (Record (Map.fromList [ ("f", reflect f), ("x", reflect a) ]))
 reflect (Record flds) = Tag "Record" (Record (Map.map reflect flds))
@@ -167,6 +171,86 @@ unit = Record (Map.fromList [])
 rec :: [(Text, Expr)] -> Expr
 rec = Record . Map.fromList
 
+mtr :: Monad m => Text -> Expr -> Expr -> m Expr
+mtr c v t =
+  return (Record (Map.fromList [("v", v), ("t", Tag c t)]))
+
+freshVar :: MonadState Int m => m Variable
+freshVar = do
+  i <- get
+  let i' = i+1
+  put i'
+  return (GeneratedVar i')
+
+trace :: MonadState Int m => Expr -> m Expr
+trace b@(VBool _) = mtr "Bool" b b
+trace i@(VInt _) =  mtr "Int" i i
+trace t@(VText _) = mtr "Text" t t
+trace v@(Var _) = mtr "Var" v (reflect v)
+trace l@(Lam v e) = mtr "Lam" l (rec [ ("var", reflectVar v)
+                                     , ("body", reflect e) ])
+trace (Eq l r) = do
+  lt <- trace l
+  rt <- trace r
+  mtr "Eq" (Eq l r) (rec [ ("left", Proj "t" lt), ("right", Proj "t" rt) ])
+trace (And l r) = do
+  lt <- trace l
+  rt <- trace r
+  mtr "And" (And l r) (rec [ ("left", Proj "t" lt), ("right", Proj "t" rt) ])
+trace (For x l b) = do
+  tl <- trace l
+  y <- freshVar
+  z <- freshVar
+  tb <- trace b
+  let v = For y (Proj "v" tl)
+            (For z (Proj "v" (App (Lam x tb) (Proj "v" (Var y))))
+               (List (V.singleton (Record (Map.fromList [ ("p", PrependPrefix (Proj "p" (Var z)) (Proj "p" (Var y)))
+                                                        , ("v", Proj "v" (Var z)) ])))))
+  mtr "For" (T.trace (show v) v)
+     (rec [ ("in", tl)
+          , ("body", reflect b)
+          , ("var", VText (pack (show x)))
+          , ("out", For y (Proj "v" tl)
+                      (List (V.singleton (Record (Map.fromList [ ("p", Proj "p" (Var y))
+                                                               , ("t", Proj "t" (App (Lam x tb) (Proj "v" (Var y))))])))))
+          ])
+trace (Closure _ _ _) = undefined
+trace (App _ _) = undefined
+trace (Record flds) = do
+  fldst <- Map.traverseWithKey (\l e -> Proj "t" <$> trace e) flds
+  fldsv <- Map.traverseWithKey (\l e -> Proj "v" <$> trace e) flds
+  mtr "Record" (Record fldsv) (Record fldst)
+trace (Proj l e) = do
+  te <- trace e
+  mtr "Proj" (Proj l (Proj "v" te)) (rec [ ("lab", VText l), ("rec", te) ])
+trace (DynProj _ _) = undefined
+trace (Tag _ _) = undefined
+trace (Switch _ _) = undefined
+trace (If c t e) = do
+  ct <- trace c
+  tt <- trace t
+  et <- trace e
+  mtr "If"
+    (If c (Proj "v" tt)
+          (Proj "v" et))
+    (rec [ ("condition", Proj "t" ct)
+         , ("branch", Proj "t" (If c tt et)) ])
+trace (List es) = do
+  tes <- traverse trace es
+  let labelledValues = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("v", (Proj "v" e))])) tes
+  let labelledTraces = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("t", (Proj "t" e))])) tes
+  let plain = V.map id tes
+  mtr "List" (List labelledValues) (List labelledTraces)
+trace (Union _ _) = undefined
+trace (PrependPrefix _ _) = undefined
+trace (PrefixOf _ _) = undefined
+trace (StripPrefix _ _) = undefined
+trace (Trace _) = undefined
+trace (RecordMap _ _ _ _) = undefined
+trace tbl@(Table n _) = mtr "Table" tbl (VText n)
+
+
+{-
 trace :: Expr -> Either String Expr
 trace (VBool b) = tr (VBool b) "Bool" (VBool b)
 trace (VInt i) = tr (VInt i) "Int" (VInt i)
@@ -261,6 +345,7 @@ trace (For x l b) = do
                 ])
 trace tbl@(Table n _) = do
   tr tbl "Table" (VText n)
+-}
 
 -- This is a huge fucking mess :( I think I actually might want some
 -- sort of über-monad for my state and env and whatnot to live in
@@ -277,21 +362,21 @@ staticEq (Record l) (Record r) = if Map.keys l == Map.keys r
   else Just False
 staticEq l r = Nothing
 
-beta :: [(Variable, Expr)] -> Expr -> Either String Expr
--- beta env e | T.trace ("beta " ++ show (length env) ++ " " ++ show e) False = undefined
+beta :: (MonadError String m, MonadState Int m) => [(Variable, Expr)] -> Expr -> m Expr
+beta env e | T.trace ("beta " ++ show (length env) ++ " " ++ show e) False = undefined
 beta env (VBool b) = return (VBool b)
 beta env (VInt i) = return (VInt i)
 beta env (VText t) = return (VText t)
 beta env (Var v) = case Prelude.lookup v env of
-  Just v -> Right v
-  Nothing -> Left $ "unbound variable " ++ show v
+  Just v -> beta env v
+  Nothing -> throwError $ "unbound variable " ++ show v
 beta env (App f arg) = do
   f <- beta env f
   arg <- beta env arg
   case f of
     Lam v body -> beta ((v, arg):env) body -- can this even happen?
     Closure v cenv body -> beta ((v, arg) : Map.toList cenv) body -- not sure about this
-    _ -> Left $ "not a function " ++ show f
+    _ -> throwError $ "not a function " ++ show f
 -- beta env (App (Lam v body) arg) = do
   -- arg <- beta env arg
   -- beta ((v, arg):env) body
@@ -306,8 +391,8 @@ beta env (Proj l e) = do
   case e of
     Record flds -> case Map.lookup l flds of
       Just e -> beta env e
-      Nothing -> Left "label not found"
-    _ -> Left $ "Not a record in projection: " ++ show e
+      Nothing -> throwError "label not found"
+    _ -> throwError $ "Not a record in projection: " ++ show e
 beta env (If a b c) = do
   a' <- beta env a
   b' <- beta env b
@@ -350,8 +435,8 @@ beta env (Switch e cs) = do
   case e of
     (Tag t v) -> case Map.lookup t cs of
       Just (var, c) -> beta ((var, v):env) c
-      Nothing -> Left $ "No case for constructor " ++ show t
-    e -> Left $ "error in switch: " ++ show e
+      Nothing -> throwError $ "No case for constructor " ++ show t
+    e -> throwError $ "error in switch: " ++ show e
 beta env (List es) =
   List <$> traverse (beta env) es
 beta env (Union l r) = do
@@ -360,16 +445,19 @@ beta env (Union l r) = do
   case (l', r') of
     (List l, List r) -> return $ List (l V.++ r)
     (_, _) -> return $ Union l' r'
-beta env tbl@(Table n t) = Right tbl
+beta env tbl@(Table n t) = return tbl
 beta env (Trace e) = do
-  e' <- trace e
+  varC <- get
+  (e', varC') <- runStateT (trace e) varC
+  put varC'
   v <- beta env e' -- in what env?
   return v
 -- beta env otherwise = Right otherwise
-beta env (Lam v e) = Right (Lam v e) -- not so sure about this one...
-beta env (Closure _ _ _) = undefined
+beta env (Lam v e) = return (Lam v e) -- not so sure about this one...
+beta env (Closure v cenv e) =
+  return (Closure v cenv e)
 beta env (PrependPrefix _ _) = undefined
-beta env (PrefixOf _ _) = undefined
+beta env (PrefixOf l r) = PrefixOf <$> beta env l <*> beta env r
 beta env (StripPrefix _ _) = undefined
 beta env (DynProj l r) = do
   VText l' <- beta env l
@@ -377,10 +465,10 @@ beta env (DynProj l r) = do
   case r' of
     Record els -> case Map.lookup l' els of
       Just e -> beta env e
-      Nothing -> Left "label not found"
+      Nothing -> throwError "label not found"
     -- We might need to do something fancy here, if the argument does
     -- not happen to normalize to a record immediately.
-    _ -> Left $ "Not a record in dyn projection: " ++ show r
+    _ -> throwError $ "Not a record in dyn projection: " ++ show r
 beta env rm@(RecordMap r kv vv e) = do
   r' <- beta env r
   case r' of
@@ -390,11 +478,13 @@ beta env rm@(RecordMap r kv vv e) = do
     -- If arg normalizes to a record all is well, but I'm not sure
     -- this is always true. I think we might need to do this based on
     -- types somehow?
-    _ -> Left "not a record in rmap"
+    _ -> throwError "not a record in rmap"
   where insert k v m = (k,v):m
 beta env (Untrace _) = undefined
 beta env (Self _) =
-  maybe (Left "Unbound SELF") (beta env) $ lookup UntraceVar env
+  case lookup UntraceVar env of
+    Just v -> beta env v
+    Nothing -> throwError "unbound SELF"
 
 beta' env =
   beta (Map.toList env)
@@ -411,7 +501,7 @@ repl env pstate = do
         Left err -> putStrLn ("ERROR: " ++ show err)
         Right v -> do printCode stdout v
                       putStrLn ""
-                      case beta' env e of
+                      case runExcept $ evalStateT (beta' env e) 20000 of
                         Left err -> putStrLn ("1st stage error: " ++ err)
                         Right e -> do printCode stdout e
                                       putStrLn ""
