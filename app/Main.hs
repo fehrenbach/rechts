@@ -245,7 +245,20 @@ trace (List es) = do
   let labelledTraces = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("t", (Proj "t" e))])) tes
   let plain = V.map id tes
   mtr "List" (List labelledValues) (List labelledTraces)
-trace (Union _ _) = undefined
+trace (Union l r) = do
+  lt <- trace l
+  rt <- trace r
+  lv <- freshVar
+  rv <- freshVar
+  mtr "Union"
+    (Union
+      (For lv (Proj "v" lt)
+        (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "l") (Proj "p" (Var lv))),
+                                                  ("v", Proj "v" (Var lv))])))))
+      (For rv (Proj "v" rt)
+        (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "r") (Proj "p" (Var rv))),
+                                                  ("v", Proj "v" (Var rv))]))))))
+    (rec [("left", Proj "t" lt), ("right", Proj "t" rt)])
 trace (PrependPrefix _ _) = undefined
 trace (PrefixOf _ _) = undefined
 trace (StripPrefix _ _) = undefined

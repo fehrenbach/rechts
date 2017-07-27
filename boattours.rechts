@@ -72,3 +72,13 @@ value = untrace \tv.
    case Proj pt =>
      ((self []) pt.rec)!pt.lab
 ;
+
+val = untrace \t.
+  switch t
+    case Int i => i
+    // case Fun f => 
+    case List lt =>
+      for (xt <- lt)
+        [self [] xt.t]
+    case Union ut => ["TODO"]
+    ;
