@@ -2,6 +2,8 @@
 
 module Parser where
 
+import Prelude hiding (lookup)
+
 import Syntax
 import Control.Monad (void)
 import Control.Monad.State.Strict
@@ -31,7 +33,7 @@ symbol = L.symbol sc
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
 
-rws = ["λ", "switch", "case", "if", "then", "else", "trace", "prefixOf", "strip", "rmap", "with", "table", "untrace", "self" ]
+rws = ["λ", "switch", "case", "if", "then", "else", "trace", "prefixOf", "strip", "rmap", "with", "table", "untrace", "self", "lookup" ]
 
 identifier :: Parser Text
 identifier = pack <$> (lexeme . try) (p >>= check)
@@ -100,7 +102,7 @@ table = do
 
 term :: Parser Expr
 term =
-  try constant <|> fun <|> record <|> list <|> switch <|> for <|> trace <|> table <|> try var <|> constructor <|> ifthenelse <|> rmap <|> untrace <|> self <|> parens expr
+  try constant <|> fun <|> record <|> list <|> switch <|> for <|> trace <|> table <|> try var <|> constructor <|> ifthenelse <|> rmap <|> untrace <|> self <|> lookup <|> parens expr
 
 untrace :: Parser Expr
 untrace = do
@@ -112,7 +114,14 @@ self :: Parser Expr
 self = do
   try $ symbol "self"
   l <- list
-  return (Self l)
+  e <- expr
+  return (Self l e)
+
+lookup :: Parser Expr
+lookup = do
+  try $ symbol "lookup"
+  v <- expr
+  return (Lookup v)
 
 trace :: Parser Expr
 trace = do

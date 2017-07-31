@@ -8,6 +8,7 @@ data Variable
   = NamedVar Text
   | GeneratedVar Int
   | UntraceVar
+  | SelfVar Text
   deriving (Eq, Ord, Show)
 
 type Env = Map.Map Variable Expr
@@ -46,7 +47,8 @@ data Expr
   | RecordMap Expr Variable Variable Expr
   | Table Text Type
   | Untrace Expr
-  | Self Expr
+  | Self Expr Expr
+  | Lookup Expr
   deriving (Show, Eq)
 
 data Stmt

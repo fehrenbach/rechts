@@ -55,7 +55,6 @@ eval env (App f x) =
     (Right notafunction, Right arg) -> Left $ "Tried to apply something that is not a closure"
     (Left err, _) -> Left $ "error in function application (fun)" ++ err
     (_, Left err) -> Left $ "error in function application (arg)" ++ err
-    (_, _) -> Left "error in function application"
 eval env (Record fields) =
   Record <$> traverse (eval env) fields
 eval env (Proj l r) =
@@ -69,15 +68,17 @@ eval env (Tag t e) = do
   e' <- eval env e
   return (Tag t e')
 eval env (Switch e cases) = do
-  tv@(Tag l v) <- eval env e
-  case Map.lookup l cases of
-    Nothing -> Left $ "No match in case -- matched value: " ++ show tv ++ " cases: " ++ show cases
-    Just (var, e) -> eval (Map.insert var v env) e
+  tagged <- eval env e
+  case tagged of
+    Tag l v -> case Map.lookup l cases of
+      Nothing -> Left $ "No match in case -- matched value: " ++ show tagged ++ " cases: " ++ show cases
+      Just (var, e) -> eval (Map.insert var v env) e
+    nottagged -> Left $ "Not a tagged value: " ++ show nottagged
 eval env (List es) = do
   vs <- traverse (eval env) es
   return (List vs)
 eval env (Union l r) = do
-  (List ls) <- eval env l
+  List ls <- eval env l
   List rs <- eval env r
   return (List $ ls V.++ rs)
 eval env (For x l e) = case eval env l of
@@ -119,10 +120,27 @@ eval env (DynProj l r) = do
     Just v -> Right v
 eval env (Table _ _) = Right (List mempty) -- TODO
 eval env (Untrace e) = eval (Map.insert UntraceVar e env) e
-eval env (Self _) = -- TODO bindings
+eval env (Self newBindings arg) = do
+  List vvs <- eval env newBindings
+  let Just vvs' = traverse foo vvs
+  let vvsMap = Map.fromList (V.toList vvs')
   case Map.lookup UntraceVar env of
-    Just e -> eval env e
+    Just e -> eval (vvsMap `Map.union` env) (App e arg)
     Nothing -> Left $ "Untrace variable is unbound -- are you inside an Untrace block?"
+ where
+   foo :: Expr -> Maybe (Variable, Expr)
+   foo (Record vv) = do
+     VText var <- Map.lookup "var" vv
+     val <- Map.lookup "val" vv
+     return (SelfVar var, val)
+eval env (Lookup v) = do
+  case eval env v of
+    Right (VText v) -> 
+      case Map.lookup (SelfVar v) env of
+        Just v -> Right $ v
+        Nothing -> Left $ "Unbound self variable " ++ show v
+    Right e ->
+      Left $ "Not a variable name: " ++ show e
 
 reflectVar :: Variable -> Expr
 reflectVar v = VText (pack (show v)) -- TODO make better
@@ -186,7 +204,7 @@ trace :: MonadState Int m => Expr -> m Expr
 trace b@(VBool _) = mtr "Bool" b b
 trace i@(VInt _) =  mtr "Int" i i
 trace t@(VText _) = mtr "Text" t t
-trace v@(Var _) = mtr "Var" v (reflect v)
+trace v@(Var vn) = mtr "Var" v (VText (pack (show vn)))
 trace l@(Lam v e) = mtr "Lam" l (rec [ ("var", reflectVar v)
                                      , ("body", reflect e) ])
 trace (Eq l r) = do
@@ -227,9 +245,6 @@ trace (Record flds) = do
 trace (Proj l e) = do
   te <- trace e
   mtr "Proj" (Proj l (Proj "v" te)) (rec [ ("lab", VText l), ("rec", te) ])
-trace (DynProj _ _) = undefined
-trace (Tag _ _) = undefined
-trace (Switch _ _) = undefined
 trace (If c t e) = do
   ct <- trace c
   tt <- trace t
@@ -259,12 +274,15 @@ trace (Union l r) = do
         (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "r") (Proj "p" (Var rv))),
                                                   ("v", Proj "v" (Var rv))]))))))
     (rec [("left", Proj "t" lt), ("right", Proj "t" rt)])
+trace tbl@(Table n _) = mtr "Table" tbl (VText n)
+trace (Trace e) = trace e
 trace (PrependPrefix _ _) = undefined
 trace (PrefixOf _ _) = undefined
 trace (StripPrefix _ _) = undefined
-trace (Trace e) = trace e
 trace (RecordMap _ _ _ _) = undefined
-trace tbl@(Table n _) = mtr "Table" tbl (VText n)
+trace (DynProj _ _) = undefined
+trace (Tag _ _) = undefined
+trace (Switch _ _) = undefined
 
 
 {-
@@ -379,12 +397,12 @@ staticEq (Record l) (Record r) = if Map.keys l == Map.keys r
   else Just False
 staticEq l r = Nothing
 
-beta :: (MonadError String m, MonadState Int m) => [(Variable, Expr)] -> Expr -> m Expr
--- beta env e | T.trace ("beta " ++ show (length env) ++ " " ++ show e) False = undefined
+beta :: (MonadError String m, MonadState Int m) => Env -> Expr -> m Expr
+-- beta env e | T.trace ("beta " ++ show env ++ " " ++ show e) False = undefined
 beta env (VBool b) = return (VBool b)
 beta env (VInt i) = return (VInt i)
 beta env (VText t) = return (VText t)
-beta env (Var v) = case Prelude.lookup v env of
+beta env (Var v) = case Map.lookup v env of
   -- This is a bit tricky: when iterating over a table, we bind the
   -- iteration variable to the lookup code, which means v => (Var v)
   -- which runs into an infinite loop if you try to beta reduce it
@@ -397,8 +415,8 @@ beta env (App f arg) = do
   f <- beta env f
   arg <- beta env arg
   case f of
-    Lam v body -> beta ((v, arg):env) body -- can this even happen?
-    Closure v cenv body -> beta ((v, arg) : Map.toList cenv) body -- not sure about this
+    Lam v body -> beta (Map.insert v arg env) body -- can this even happen?
+    Closure v cenv body -> beta (Map.insert v arg cenv) body -- not sure about this
     _ -> throwError $ "not a function " ++ show f
 beta env (Proj l e) = do
   e <- beta env e
@@ -426,15 +444,15 @@ beta env (For v i e) = do
   i <- beta env i
   case i of
     (List ls) -> do
-      es <- traverse (\x -> beta ((v, x) : env) e) ls
+      es <- traverse (\x -> beta (Map.insert v x env) e) ls
       beta env (Prelude.foldl Union (List mempty) es)
     t@(Table tn tt) -> do
-      e <- beta (insert v (Var v) env) e
+      e <- beta (Map.insert v (Var v) env) e
       return (For v t e)
+    -- _ -> throwError $ "not a list or table: " ++ show i
     _ -> do
-      e <- beta ((v, (Var v)):env) e
+      e <- beta (Map.insert v (Var v) env) e
       return $ For v i e
-  where insert k v m = (k,v):m
 beta env (And l r) = do
   l <- beta env l
   r <- beta env r
@@ -452,7 +470,7 @@ beta env (Switch e cs) = do
   e <- beta env e
   case e of
     (Tag t v) -> case Map.lookup t cs of
-      Just (var, c) -> beta ((var, v):env) c
+      Just (var, c) -> beta (Map.insert var v env) c
       Nothing -> throwError $ "No case for constructor " ++ show t
     e -> throwError $ "error in switch: " ++ show e
 beta env (List es) =
@@ -461,6 +479,7 @@ beta env (Union l r) = do
   l' <- beta env l
   r' <- beta env r
   case (l', r') of
+    (List l, List r) | V.null l -> return r'
     (List l, List r) -> return $ List (l V.++ r)
     (_, _) -> return $ Union l' r'
 beta env tbl@(Table n t) = return tbl
@@ -474,7 +493,12 @@ beta env (Trace e) = do
 beta env (Lam v e) = return (Lam v e) -- not so sure about this one...
 beta env (Closure v cenv e) =
   return (Closure v cenv e)
-beta env (PrependPrefix l r) = PrependPrefix <$> beta env l <*> beta env r
+beta env (PrependPrefix l r) = do
+  l <- beta env l
+  r <- beta env r
+  case (l, r) of
+    (VText l, VText r) -> return (VText $ l <> "⋅" <> r)
+    (_, _) -> return (PrependPrefix l r)
 beta env (PrefixOf l r) = PrefixOf <$> beta env l <*> beta env r
 beta env (StripPrefix _ _) = undefined
 beta env (DynProj l r) = do
@@ -491,21 +515,35 @@ beta env rm@(RecordMap r kv vv e) = do
   r' <- beta env r
   case r' of
     Record els -> do
-      els' <- Map.traverseWithKey (\l el -> beta (insert kv (VText l) (insert vv el env)) e) els
+      els' <- Map.traverseWithKey (\l el -> beta (Map.insert kv (VText l) (Map.insert vv el env)) e) els
       return $ Record els'
     -- If arg normalizes to a record all is well, but I'm not sure
     -- this is always true. I think we might need to do this based on
     -- types somehow?
     _ -> throwError "not a record in rmap"
-  where insert k v m = (k,v):m
 beta env (Untrace _) = undefined
-beta env (Self _) =
-  case lookup UntraceVar env of
-    Just v -> beta env v
+beta env (Self newVars arg) = do
+  List newVars' <- beta env newVars
+  vvs <- traverse foo newVars'
+  let vvsMap = Map.fromList (V.toList vvs)
+  case Map.lookup UntraceVar env of
+    Just v -> beta (vvsMap `Map.union` env) (App v arg)
     Nothing -> throwError "unbound SELF"
+ where
+   foo (Record vv) =
+     case Map.lookup "var" vv of
+       Just (VText var) -> case Map.lookup "val" vv of
+         Just val -> return (SelfVar var, val)
+         Nothing -> throwError $ "No field val in key value binding record"
+       Nothing -> throwError $ "No field var in key value binding record"
+beta env test@(Lookup v) = do
+  (VText v) <- beta env v
+  case Map.lookup (SelfVar v) env of
+    Just v -> return v
+    Nothing -> throwError $ "unbound selfVar " ++ show v ++ " " ++ show env
 
 beta' env =
-  beta (Map.toList env)
+  beta env
 
 repl env pstate = do
   putStr "rechts> "
@@ -517,21 +555,24 @@ repl env pstate = do
       -- putStrLn (show e)
       case eval env e of
         Left err -> putStrLn ("ERROR: " ++ show err)
-        Right v -> do printCode stdout v
-                      putStrLn ""
-                      case evalStateT (trace e) 5500 of
-                        Left err -> putStrLn ("TRACE REWRITING ERROR: " ++ err)
-                        Right t -> do -- printCode stdout t
-                                      putStrLn "trace code omitted"
-                      --                 case eval env t of -- Not sure about this env here. Should this be a traced env?
-                      --                   Left err -> putStrLn ("TRACED EVALUATION ERROR: " ++ show err)
-                      --                   Right v -> do printValue stdout v
-                      --                                 putStrLn ""
-                      --
-                      case runExcept $ evalStateT (beta' env e) 20000 of
-                        Left err -> putStrLn ("1st stage error: " ++ err)
-                        Right e -> do printCode stdout e
-                                      putStrLn ""
+        Right v -> do
+          printCode stdout v
+          putStrLn ""
+          case evalStateT (trace e) 5500 of
+            Left err -> putStrLn ("TRACE REWRITING ERROR: " ++ err)
+            Right t -> do
+              -- printCode stdout t; putStrLn ""
+              putStrLn "trace code omitted"
+                --                 case eval env t of -- Not sure about this env here. Should this be a traced env?
+                --                   Left err -> putStrLn ("TRACED EVALUATION ERROR: " ++ show err)
+                --                   Right v -> do printValue stdout v
+                --                                 putStrLn ""
+                --
+              case runExcept $ evalStateT (beta' env e) 20000 of
+                Left err -> putStrLn ("1st stage error: " ++ err)
+                Right e -> do
+                  printCode stdout e
+                  putStrLn ""
   repl env pstate
                       
 

@@ -1,3 +1,20 @@
+val = untrace \t.
+  switch t
+    case Var v => lookup v
+    case Int i => i
+    // case Fun f => 
+    case List lt =>
+      for (xt <- lt)
+        [self [] xt.t]
+    case Union ut =>
+      (self [] ut.left) ++ (self [] ut.right)
+    case For ft =>
+      for (inpv <- (ft.in).v)
+      for (relevantoutt <- for (outt <- ft.out) if (outt.p == inpv.p) then [outt] else [])
+        self [({var = ft.var, val = inpv.v})] relevantoutt.t
+        // [ {var = ft.var, val = inpv.v, trc = t.t} ]
+    ;
+
 agencies = [ { name = "EdinTours", basedin = "Edinburgh", phone = "412 1200"}, { name = "Burns's", basedin = "Glasgow", phone = "607 3000"}];
 
 eTours = [ { name = "EdinTours", destination = "Edinburgh", type = "bus", price = 20}, { name = "EdinTours", destination = "Loch Ness", type = "bus", price = 50},
@@ -13,72 +30,62 @@ qv = for (a <- [ { name = "EdinTours", basedin = "Edinburgh", phone = "412 1200"
 
 qt = for (a <- table "agencies" {name: Text, basedin: Text, phone: Text}) for (e <- table "externalTours" {name: Text, destination: Text, price: Int}) if (a.name == e.name && e.type == "Boat") then [{name = e.name, phone = a.phone}] else [];
 
-// lookup = \env.\var.
-//   for (v <- env)
-//     if (v.name == var) then [v.value] else [];
+// // lookup = \env.\var.
+// //   for (v <- env)
+// //     if (v.name == var) then [v.value] else [];
 
-// value = \env.\tv.
+// // value = \env.\tv.
+// //  switch tv.t
+// //    case Val foo => tv.v
+// //    case Lam lt => tv.v
+// //    case Var vname => lookup env vname
+// //    case List lt =>
+// //      for (t <- lt)
+// //        for (v <- tv.v)
+// //          if (t.p prefixOf v.p) then [value env {t=t.t, v=v.v}] else []
+// //    case Union ut =>
+// //      (value env {t=ut.left, v = for (v <- tv.v) if ("l" prefixOf v.p) then [{p = "l" strip v.p, v=v.v}] else []})
+// //      ++ (value env {t=ut.right, v = for (v <- tv.v) if ("r" prefixOf v.p) then [{p = "r" strip v.p, v=v.v}] else []})
+// //    case Record rt =>
+// //      rmap tv.v with (k = v) => value env {t=rt!k, v = v}
+// //    ;
+
+// value = \tv.
 //  switch tv.t
-//    case Val foo => tv.v
+//    case Int i => i
+//    case Bool b => b
+//    case Text t => t
 //    case Lam lt => tv.v
-//    case Var vname => lookup env vname
+//    case App at =>
+//      (value at.fun) (value at.arg)
 //    case List lt =>
 //      for (t <- lt)
 //        for (v <- tv.v)
-//          if (t.p prefixOf v.p) then [value env {t=t.t, v=v.v}] else []
+//          if (t.p prefixOf v.p) then [value {t=t.t, v=v.v}] else []
 //    case Union ut =>
-//      (value env {t=ut.left, v = for (v <- tv.v) if ("l" prefixOf v.p) then [{p = "l" strip v.p, v=v.v}] else []})
-//      ++ (value env {t=ut.right, v = for (v <- tv.v) if ("r" prefixOf v.p) then [{p = "r" strip v.p, v=v.v}] else []})
+//      (value {t=ut.left, v = for (v <- tv.v) if ("l" prefixOf v.p) then [{p = "l" strip v.p, v=v.v}] else []})
+//      ++ (value {t=ut.right, v = for (v <- tv.v) if ("r" prefixOf v.p) then [{p = "r" strip v.p, v=v.v}] else []})
 //    case Record rt =>
-//      rmap tv.v with (k = v) => value env {t=rt!k, v = v}
+//      rmap tv.v with (k = v) => value {t=rt!k, v = v}
+//    // case Proj pt =>
+//      // (value pt.rec)!pt.lab // I don't think this works, the right hand side of ! is looked up in some environment, not evaluated
 //    ;
 
-value = \tv.
- switch tv.t
-   case Int i => i
-   case Bool b => b
-   case Text t => t
-   case Lam lt => tv.v
-   case App at =>
-     (value at.fun) (value at.arg)
-   case List lt =>
-     for (t <- lt)
-       for (v <- tv.v)
-         if (t.p prefixOf v.p) then [value {t=t.t, v=v.v}] else []
-   case Union ut =>
-     (value {t=ut.left, v = for (v <- tv.v) if ("l" prefixOf v.p) then [{p = "l" strip v.p, v=v.v}] else []})
-     ++ (value {t=ut.right, v = for (v <- tv.v) if ("r" prefixOf v.p) then [{p = "r" strip v.p, v=v.v}] else []})
-   case Record rt =>
-     rmap tv.v with (k = v) => value {t=rt!k, v = v}
-   // case Proj pt =>
-     // (value pt.rec)!pt.lab // I don't think this works, the right hand side of ! is looked up in some environment, not evaluated
-   ;
+// t = trace 1;
 
-t = trace 1;
-
-value = untrace \tv.
-  switch tv.t
-    case Int i => i
-    case List lt =>
-      for (t <- lt)
-        for (v <- tv.v)
-          if (t.p prefixOf v.p) then [self [] {t=t.t, v=v.v}] else []
-   case Union ut =>
-     (self [] {t=ut.left, v = for (v <- tv.v) if ("l" prefixOf v.p) then [{p = "l" strip v.p, v=v.v}] else []})
-     ++ (self [] {t=ut.right, v = for (v <- tv.v) if ("r" prefixOf v.p) then [{p = "r" strip v.p, v=v.v}] else []})
-   case For ft => "FOR"
-   case Record rt =>
-     rmap tv.v with (k = v) => self [] {t=rt!k, v=v}
-   case Proj pt =>
-     ((self []) pt.rec)!pt.lab
-;
-
-val = untrace \t.
-  switch t
-    case Int i => i
-    // case Fun f => 
-    case List lt =>
-      for (xt <- lt)
-        [self [] xt.t]
-    case Union ut => ["TODO"]
-    ;
+// value = untrace \tv.
+//   switch tv.t
+//     case Int i => i
+//     case List lt =>
+//       for (t <- lt)
+//         for (v <- tv.v)
+//           if (t.p prefixOf v.p) then [self [] {t=t.t, v=v.v}] else []
+//    case Union ut =>
+//      (self [] {t=ut.left, v = for (v <- tv.v) if ("l" prefixOf v.p) then [{p = "l" strip v.p, v=v.v}] else []})
+//      ++ (self [] {t=ut.right, v = for (v <- tv.v) if ("r" prefixOf v.p) then [{p = "r" strip v.p, v=v.v}] else []})
+//    case For ft => "FOR"
+//    case Record rt =>
+//      rmap tv.v with (k = v) => self [] {t=rt!k, v=v}
+//    case Proj pt =>
+//      ((self []) pt.rec)!pt.lab
+// ;
