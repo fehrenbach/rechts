@@ -49,6 +49,7 @@ data Expr
   | Untrace Expr
   | Self Expr Expr
   | Lookup Expr
+  | Indexed Expr -- indexed : [a] -> [{p : PrefixLabel, v : a}]
   deriving (Show, Eq)
 
 data Stmt

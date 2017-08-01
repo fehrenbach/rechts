@@ -102,7 +102,7 @@ table = do
 
 term :: Parser Expr
 term =
-  try constant <|> fun <|> record <|> list <|> switch <|> for <|> trace <|> table <|> try var <|> constructor <|> ifthenelse <|> rmap <|> untrace <|> self <|> lookup <|> parens expr
+  try constant <|> fun <|> record <|> list <|> switch <|> for <|> trace <|> table <|> try var <|> constructor <|> ifthenelse <|> rmap <|> untrace <|> self <|> lookup <|> indexed <|> parens expr
 
 untrace :: Parser Expr
 untrace = do
@@ -122,6 +122,12 @@ lookup = do
   try $ symbol "lookup"
   v <- expr
   return (Lookup v)
+
+indexed :: Parser Expr
+indexed = do
+  try $ symbol "indexed"
+  e <- expr
+  return (Indexed e)
 
 trace :: Parser Expr
 trace = do

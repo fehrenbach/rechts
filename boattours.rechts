@@ -2,6 +2,8 @@ val = untrace \t.
   switch t
     case Var v => lookup v
     case Int i => i
+    case If it =>
+      self [] it.branch
     // case Fun f => 
     case List lt =>
       for (xt <- lt)
@@ -11,7 +13,7 @@ val = untrace \t.
     case For ft =>
       for (inpv <- (ft.in).v)
       for (relevantoutt <- for (outt <- ft.out) if (outt.p == inpv.p) then [outt] else [])
-        self [({var = ft.var, val = inpv.v})] relevantoutt.t
+        self [{var = ft.var, val = inpv.v}] relevantoutt.t
         // [ {var = ft.var, val = inpv.v, trc = t.t} ]
     ;
 

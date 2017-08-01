@@ -141,6 +141,13 @@ eval env (Lookup v) = do
         Nothing -> Left $ "Unbound self variable " ++ show v
     Right e ->
       Left $ "Not a variable name: " ++ show e
+eval env (Indexed e) = do
+  e <- eval env e
+  case e of
+    List xs -> Right (List (V.imap (\i x -> Record (Map.fromList [ ("p", VText (pack (show i)))
+                                                                 , ("v", x) ])) xs))
+    Table _ _ -> Right (List mempty)
+    _ -> Left $ "in indexed: argument not a list or table"
 
 reflectVar :: Variable -> Expr
 reflectVar v = VText (pack (show v)) -- TODO make better
@@ -274,7 +281,10 @@ trace (Union l r) = do
         (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "r") (Proj "p" (Var rv))),
                                                   ("v", Proj "v" (Var rv))]))))))
     (rec [("left", Proj "t" lt), ("right", Proj "t" rt)])
-trace tbl@(Table n _) = mtr "Table" tbl (VText n)
+trace tbl@(Table n _) = do
+  let v = Indexed tbl
+  let t = VText n
+  mtr "Table" v t
 trace (Trace e) = trace e
 trace (PrependPrefix _ _) = undefined
 trace (PrefixOf _ _) = undefined
@@ -440,19 +450,27 @@ beta env (Eq a b) = do
     Just True -> return $ VBool True
     Just False -> return $ VBool False
     Nothing -> return $ Eq a' b'
-beta env (For v i e) = do
+beta env (For x i n) = do
   i <- beta env i
   case i of
+    -- FOR-beta
+    List s | V.length s == 1 -> beta (Map.insert x (V.head s) env) n
+    -- This should be a generalized version of FOR-beta, but it doesn't seem to work :/
     (List ls) -> do
-      es <- traverse (\x -> beta (Map.insert v x env) e) ls
-      beta env (Prelude.foldl Union (List mempty) es)
+      ns <- traverse (\v -> beta (Map.insert x v env) n) ls
+      beta env (Prelude.foldl Union (List mempty) ns)
     t@(Table tn tt) -> do
-      e <- beta (Map.insert v (Var v) env) e
-      return (For v t e)
+      e <- beta (Map.insert x (Var x) env) n
+      return (For x t e)
+    -- FOR-ASSOC
+    For y l m -> -- TODO if y \notin FV(e)
+      beta env (For y l (For x m n))
+    -- FOR-IF-SRC
+    If b m (List empty) | V.null empty -> beta env (If b (For x m n) (List empty))
     -- _ -> throwError $ "not a list or table: " ++ show i
     _ -> do
-      e <- beta (Map.insert v (Var v) env) e
-      return $ For v i e
+      e <- beta (Map.insert x (Var x) env) n
+      return $ For x i e
 beta env (And l r) = do
   l <- beta env l
   r <- beta env r
@@ -469,9 +487,10 @@ beta env (Tag t e) = do
 beta env (Switch e cs) = do
   e <- beta env e
   case e of
-    (Tag t v) -> case Map.lookup t cs of
-      Just (var, c) -> beta (Map.insert var v env) c
-      Nothing -> throwError $ "No case for constructor " ++ show t
+    Tag t v -> case Map.lookup t cs of
+                 Just (var, c) -> beta (Map.insert var v env) c
+                 Nothing -> throwError $ "No case for constructor " ++ show t
+    e -> return e
     e -> throwError $ "error in switch: " ++ show e
 beta env (List es) =
   List <$> traverse (beta env) es
@@ -541,6 +560,9 @@ beta env test@(Lookup v) = do
   case Map.lookup (SelfVar v) env of
     Just v -> return v
     Nothing -> throwError $ "unbound selfVar " ++ show v ++ " " ++ show env
+beta env (Indexed e) = do
+  e <- beta env e
+  return (Indexed e)
 
 beta' env =
   beta env
