@@ -33,7 +33,7 @@ symbol = L.symbol sc
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
 
-rws = ["λ", "switch", "case", "if", "then", "else", "trace", "prefixOf", "strip", "rmap", "with", "table", "untrace", "self", "lookup" ]
+rws = ["λ", "switch", "case", "if", "then", "else", "trace", "prefixOf", "strip", "rmap", "with", "table", "untrace", "self", "lookup", "indexed" ]
 
 identifier :: Parser Text
 identifier = pack <$> (lexeme . try) (p >>= check)

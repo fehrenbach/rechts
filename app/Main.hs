@@ -16,6 +16,7 @@ import qualified Data.Map.Strict as Map
 import qualified Data.Vector as V
 import Text.Megaparsec (runParser, ParsecT(..), runParserT', State(..), runParserT, parseErrorPretty)
 import System.IO (hFlush, stdout)
+import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.State.Strict (evalStateT, runStateT, MonadState, get, put)
 import Control.Monad.Except (MonadError, throwError, runExceptT, runExcept)
 
@@ -234,7 +235,7 @@ trace (For x l b) = do
                                                         , ("v", Proj "v" (Var zv)) ])))))
   mtr "For" v
      (rec [ ("in", tl)
-          , ("body", reflect b)
+          -- , ("body", reflect b) -- not needed ATM, make my life a bit easier
           , ("var", VText (pack (show x)))
           , ("out", For yt (Proj "v" tl)
                       (List (V.singleton (Record (Map.fromList [ ("p", Proj "p" (Var yt))
@@ -259,8 +260,8 @@ trace (If c t e) = do
   mtr "If"
     (If c (Proj "v" tt)
           (Proj "v" et))
-    (rec [ ("condition", Proj "t" ct)
-         , ("branch", Proj "t" (If c tt et)) ])
+    (rec [ -- ("condition", Proj "t" ct) -- not needed ATM, so remove to make my life easier 
+          ("branch", Proj "t" (If c tt et)) ])
 trace (List es) = do
   tes <- traverse trace es
   let labelledValues = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("v", (Proj "v" e))])) tes
@@ -283,8 +284,8 @@ trace (Union l r) = do
     (rec [("left", Proj "t" lt), ("right", Proj "t" rt)])
 trace tbl@(Table n _) = do
   let v = Indexed tbl
-  let t = VText n
-  mtr "Table" v t
+  mtr "Table" v (Record (Map.fromList [ ("name", VText n)
+                                      , ("ref", tbl) ]))
 trace (Trace e) = trace e
 trace (PrependPrefix _ _) = undefined
 trace (PrefixOf _ _) = undefined
@@ -407,8 +408,15 @@ staticEq (Record l) (Record r) = if Map.keys l == Map.keys r
   else Just False
 staticEq l r = Nothing
 
+unsafeLogCode :: Expr -> a -> a
+unsafeLogCode e a = unsafePerformIO $ do
+  printCode stdout e
+  putStrLn ""
+  return a
+
 beta :: (MonadError String m, MonadState Int m) => Env -> Expr -> m Expr
 -- beta env e | T.trace ("beta " ++ show env ++ " " ++ show e) False = undefined
+-- beta env e | unsafeLogCode e False = undefined
 beta env (VBool b) = return (VBool b)
 beta env (VInt i) = return (VInt i)
 beta env (VText t) = return (VText t)
@@ -434,6 +442,7 @@ beta env (Proj l e) = do
     Record flds -> case Map.lookup l flds of
       Just e -> beta env e
       Nothing -> throwError "label not found"
+    If a b c -> beta env (If a (Proj l b) (Proj l c))
     e -> return $ Proj l e
 beta env (If a b c) = do
   a' <- beta env a
@@ -455,19 +464,22 @@ beta env (For x i n) = do
   case i of
     -- FOR-beta
     List s | V.length s == 1 -> beta (Map.insert x (V.head s) env) n
-    -- This should be a generalized version of FOR-beta, but it doesn't seem to work :/
-    (List ls) -> do
-      ns <- traverse (\v -> beta (Map.insert x v env) n) ls
+    List is -> do
+      let ns = fmap (\i -> For x (List (V.singleton i)) n) is
       beta env (Prelude.foldl Union (List mempty) ns)
-    t@(Table tn tt) -> do
-      e <- beta (Map.insert x (Var x) env) n
-      return (For x t e)
+    -- t@(Table tn tt) -> do
+    --   e <- beta (Map.insert x (Var x) env) n
+    --   return (For x t e)
     -- FOR-ASSOC
     For y l m -> -- TODO if y \notin FV(e)
       beta env (For y l (For x m n))
+    -- FOR-UNION-SRC
+    Union m1 m2 ->
+      beta env (Union (For x m1 n) (For x m2 n))
     -- FOR-IF-SRC
     If b m (List empty) | V.null empty -> beta env (If b (For x m n) (List empty))
     -- _ -> throwError $ "not a list or table: " ++ show i
+    -- wtf -> return $ VText (pack (show wtf))
     _ -> do
       e <- beta (Map.insert x (Var x) env) n
       return $ For x i e
@@ -482,7 +494,7 @@ beta env (And l r) = do
     _ -> return $ And l r
 beta env (Record es) =
   Record <$> traverse (beta env) es
-beta env (Tag t e) = do
+beta env (Tag t e) =
   Tag t <$> beta env e
 beta env (Switch e cs) = do
   e <- beta env e
@@ -492,13 +504,16 @@ beta env (Switch e cs) = do
                  Nothing -> throwError $ "No case for constructor " ++ show t
     e -> return e
     e -> throwError $ "error in switch: " ++ show e
-beta env (List es) =
+beta env (List es) = do
+  -- let xs = fmap (List . V.singleton) es
+  -- beta env (Prelude.foldl Union (List mempty) xs)
   List <$> traverse (beta env) es
 beta env (Union l r) = do
   l' <- beta env l
   r' <- beta env r
   case (l', r') of
-    (List l, List r) | V.null l -> return r'
+    (List l, _) | V.null l -> return r'
+    (_, List r) | V.null r -> return l'
     (List l, List r) -> return $ List (l V.++ r)
     (_, _) -> return $ Union l' r'
 beta env tbl@(Table n t) = return tbl
@@ -508,10 +523,9 @@ beta env (Trace e) = do
   put varC'
   v <- beta env e' -- in what env?
   return v
--- beta env otherwise = Right otherwise
 beta env (Lam v e) = return (Lam v e) -- not so sure about this one...
-beta env (Closure v cenv e) =
-  return (Closure v cenv e)
+-- beta env (Closure v cenv e) =
+  -- return (Closure v cenv e)
 beta env (PrependPrefix l r) = do
   l <- beta env l
   r <- beta env r
@@ -540,13 +554,13 @@ beta env rm@(RecordMap r kv vv e) = do
     -- this is always true. I think we might need to do this based on
     -- types somehow?
     _ -> throwError "not a record in rmap"
-beta env (Untrace _) = undefined
-beta env (Self newVars arg) = do
+beta env dbg@(Self newVars arg) = do
   List newVars' <- beta env newVars
   vvs <- traverse foo newVars'
   let vvsMap = Map.fromList (V.toList vvs)
   case Map.lookup UntraceVar env of
-    Just v -> beta (vvsMap `Map.union` env) (App v arg)
+    Just v -> let dbg2 = (App v arg) in
+              T.trace (show dbg ++ " NORMALISED TO " ++ show dbg2) (beta (vvsMap `Map.union` env) dbg2)
     Nothing -> throwError "unbound SELF"
  where
    foo (Record vv) =
@@ -563,6 +577,7 @@ beta env test@(Lookup v) = do
 beta env (Indexed e) = do
   e <- beta env e
   return (Indexed e)
+beta env (Untrace _) = undefined
 
 beta' env =
   beta env

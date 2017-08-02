@@ -4,7 +4,8 @@ val = untrace \t.
     case Int i => i
     case If it =>
       self [] it.branch
-    // case Fun f => 
+    case Record rt =>
+      rmap rt with (k = t) => self [] t
     case List lt =>
       for (xt <- lt)
         [self [] xt.t]
@@ -14,6 +15,24 @@ val = untrace \t.
       for (inpv <- (ft.in).v)
       for (relevantoutt <- for (outt <- ft.out) if (outt.p == inpv.p) then [outt] else [])
         self [{var = ft.var, val = inpv.v}] relevantoutt.t
+    ;
+
+val2 = untrace \t.
+  switch t
+    case Var v => lookup v
+    case Table tt => tt.ref
+    case Int i => i
+    case If it =>
+      self [] it.branch
+    case List lt =>
+      for (xt <- lt)
+        [self [] xt.t]
+    case Union ut =>
+      (self [] ut.left) ++ (self [] ut.right)
+    case For ft =>
+      for (inpt <- switch (ft.in).t case List lt => lt case Table tt => indexed tt.ref)
+      for (relevantoutt <- for (outt <- ft.out) if (outt.p == inpt.p) then [outt] else [])
+        self [{var = ft.var, val = self [] inpt.t}] relevantoutt.t
         // [ {var = ft.var, val = inpv.v, trc = t.t} ]
     ;
 
