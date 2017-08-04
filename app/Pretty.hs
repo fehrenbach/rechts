@@ -17,6 +17,8 @@ prettyVariable (GeneratedVar n) = "v_" <> pretty n
 label :: Text -> Doc
 label t = blue (pretty (unpack t))
 
+prettyType _ = "..."
+
 prettyCode :: Expr -> Doc
 prettyCode (VBool b) = pretty b
 prettyCode (VInt i) = pretty i
@@ -53,6 +55,10 @@ prettyCode (And l r) =
   parens $ prettyCode l <+> "&&" <+> prettyCode r
 prettyCode (PrependPrefix l r) =
   parens $ prettyCode l <+> magenta "⋅" <+> prettyCode r
+prettyCode (Indexed e) =
+  parens $ magenta "indexed" <+> prettyCode e
+prettyCode (Table tn tt) =
+  magenta "table" <+> prettyCode (VText tn) <+> prettyType tt
 prettyCode (For x l e) =
   hang 2 $ magenta "for" <+> parens (prettyVariable x <+> "<-" <+> group (prettyCode l)) <$> prettyCode e
 prettyCode (Lam x e) =

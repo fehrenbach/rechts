@@ -6,15 +6,34 @@ val = untrace \t.
       self [] it.branch
     case Record rt =>
       rmap rt with (k = t) => self [] t
+    case Proj pt =>
+      (self [] (pt.rec).t)!pt.lab
     case List lt =>
       for (xt <- lt)
         [self [] xt.t]
+    case Table tt => tt.ref
     case Union ut =>
       (self [] ut.left) ++ (self [] ut.right)
     case For ft =>
       for (inpv <- (ft.in).v)
+      // I think the == there might be wrong, shouldn't this be a prefix?
       for (relevantoutt <- for (outt <- ft.out) if (outt.p == inpv.p) then [outt] else [])
         self [{var = ft.var, val = inpv.v}] relevantoutt.t
+    // case For ft =>
+    //   for (inpt <- switch (ft.in).t case List lt => lt case Table tt => indexed tt.ref)
+    //   for (relevantoutt <- for (outt <- ft.out) if (outt.p == inpt.p) then [outt] else [])
+    //     self [{var = ft.var, val = self [] inpt.t}] relevantoutt.t
+    ;
+
+whr = untrace \t.
+  switch t
+    // case Var v => lookup v
+    // case Int i => i
+    // case If it =>
+      // self [] it.branch
+    case Table tt =>
+      for (x <- tt.ref)
+        [rmap x with (k = v) => {tbl = tt.name, col = k, row = x.id, data = x!k}]
     ;
 
 val2 = untrace \t.

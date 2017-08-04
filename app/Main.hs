@@ -411,8 +411,75 @@ staticEq l r = Nothing
 unsafeLogCode :: Expr -> a -> a
 unsafeLogCode e a = unsafePerformIO $ do
   printCode stdout e
-  putStrLn ""
   return a
+
+subst :: Variable -> Variable -> Expr -> Expr
+subst x y (Var z)
+  | x == z = Var y
+  | otherwise = Var z
+subst x y (Switch a cs) =
+  Switch (subst x y a) (fmap (\(v, c) -> if v == x then (v, c) else (v, subst x y c)) cs)
+subst x y (For z a b)
+  | x == z = For z (subst x y a) b
+  | otherwise = For z (subst x y a) (subst x y b)
+subst x y (RecordMap arg kv vv e)
+  | kv == x = RecordMap (subst x y arg) kv vv e
+  | vv == x = RecordMap (subst x y arg) kv vv e
+  | otherwise = RecordMap (subst x y arg) kv vv (subst x y e)
+subst x y (Lookup a) =
+  Lookup (subst x y a)  
+subst x y (Indexed a) =
+  Indexed (subst x y a)
+subst x y (Proj l a) =
+  Proj l (subst x y a)
+subst x y (If a b c) =
+  If (subst x y a) (subst x y b) (subst x y c)
+subst x y (Eq a b) =
+  Eq (subst x y a) (subst x y b)
+subst x y (Union a b) =
+  Union (subst x y a) (subst x y b)
+subst x y (DynProj a b) =
+  DynProj (subst x y a) (subst x y b)
+subst x y (List ls) =
+  List (fmap (subst x y) ls)
+subst x y (Self vars arg) =
+  Self (subst x y vars) (subst x y arg)
+subst x y (Record fs) =
+  Record (fmap (subst x y) fs)
+subst _ _ otherwise = error $ show otherwise
+
+freshen :: MonadState Int m => Expr -> m Expr
+freshen (For x y z) = do
+  x' <- freshVar
+  y' <- freshen y
+  z' <- freshen (subst x x' z)
+  return (For x' y' z')
+freshen (Lam x y) = do
+  x' <- freshVar
+  y' <- freshen (subst x x' y)
+  return (Lam x' y')
+freshen (Switch x ys) = do
+  x' <- freshen x
+  ys' <- traverse (\(v, y) -> (v,) <$> freshen y) ys
+  return (Switch x' ys')
+freshen (RecordMap x kv vv y) = do
+  x' <- freshen x
+  kv' <- freshVar
+  vv' <- freshVar
+  y' <- freshen (subst vv vv' (subst kv kv' y))
+  return (RecordMap x' kv' vv' y')
+freshen (Var x) = return (Var x)
+freshen (Lookup x) = Lookup <$> freshen x
+freshen (Indexed x) = Indexed <$> freshen x
+freshen (Proj l x) = Proj l <$> freshen x
+freshen (If a b c) = If <$> freshen a <*> freshen b <*> freshen c
+freshen (Eq a b) = Eq <$> freshen a <*> freshen b
+freshen (Union a b) = Union <$> freshen a <*> freshen b
+freshen (DynProj a b) = DynProj <$> freshen a <*> freshen b
+freshen (List xs) = List <$> traverse freshen xs
+freshen (Record xs) = Record <$> traverse freshen xs
+freshen (Self vars arg) = Self <$> freshen vars <*> freshen arg
+freshen otherwise = error $ show otherwise
 
 beta :: (MonadError String m, MonadState Int m) => Env -> Expr -> m Expr
 -- beta env e | T.trace ("beta " ++ show env ++ " " ++ show e) False = undefined
@@ -420,6 +487,7 @@ beta :: (MonadError String m, MonadState Int m) => Env -> Expr -> m Expr
 beta env (VBool b) = return (VBool b)
 beta env (VInt i) = return (VInt i)
 beta env (VText t) = return (VText t)
+-- beta env e@(Var _) | unsafeLogCode e False = undefined
 beta env (Var v) = case Map.lookup v env of
   -- This is a bit tricky: when iterating over a table, we bind the
   -- iteration variable to the lookup code, which means v => (Var v)
@@ -464,6 +532,7 @@ beta env (For x i n) = do
   case i of
     -- FOR-beta
     List s | V.length s == 1 -> beta (Map.insert x (V.head s) env) n
+    -- FOR-beta multi (and FOR-ZERO-L)
     List is -> do
       let ns = fmap (\i -> For x (List (V.singleton i)) n) is
       beta env (Prelude.foldl Union (List mempty) ns)
@@ -478,8 +547,7 @@ beta env (For x i n) = do
       beta env (Union (For x m1 n) (For x m2 n))
     -- FOR-IF-SRC
     If b m (List empty) | V.null empty -> beta env (If b (For x m n) (List empty))
-    -- _ -> throwError $ "not a list or table: " ++ show i
-    -- wtf -> return $ VText (pack (show wtf))
+    -- otherwise -> throwError $ show otherwise
     _ -> do
       e <- beta (Map.insert x (Var x) env) n
       return $ For x i e
@@ -496,14 +564,14 @@ beta env (Record es) =
   Record <$> traverse (beta env) es
 beta env (Tag t e) =
   Tag t <$> beta env e
-beta env (Switch e cs) = do
-  e <- beta env e
-  case e of
+beta env s@(Switch e cs) = do
+  e' <- beta env e
+  case e' of
     Tag t v -> case Map.lookup t cs of
                  Just (var, c) -> beta (Map.insert var v env) c
                  Nothing -> throwError $ "No case for constructor " ++ show t
-    e -> return e
-    e -> throwError $ "error in switch: " ++ show e
+    If c th el -> beta env (If c (Switch th cs) (Switch el cs))
+    _ -> throwError $ "error in switch: " ++ show e ++ " normalized to " ++ show e' ++ " in " ++ show s
 beta env (List es) = do
   -- let xs = fmap (List . V.singleton) es
   -- beta env (Prelude.foldl Union (List mempty) xs)
@@ -541,6 +609,7 @@ beta env (DynProj l r) = do
     Record els -> case Map.lookup l' els of
       Just e -> beta env e
       Nothing -> throwError "label not found"
+    _ -> return r'
     -- We might need to do something fancy here, if the argument does
     -- not happen to normalize to a record immediately.
     _ -> throwError $ "Not a record in dyn projection: " ++ show r
@@ -550,17 +619,19 @@ beta env rm@(RecordMap r kv vv e) = do
     Record els -> do
       els' <- Map.traverseWithKey (\l el -> beta (Map.insert kv (VText l) (Map.insert vv el env)) e) els
       return $ Record els'
-    -- If arg normalizes to a record all is well, but I'm not sure
-    -- this is always true. I think we might need to do this based on
-    -- types somehow?
-    _ -> throwError "not a record in rmap"
+    -- We can partially evaluate rmap based on type information alone:
+    -- for (x <- table "foo" {abc: Text, cde: Int}) [rmap x (k = v) => v]
+    --  -> for (x <- ...) [{abc = x!"abc", cde = x!"cde"}]
+    -- but we need type information!
+    _ -> throwError $ "not a record in rmap " ++ show r'
 beta env dbg@(Self newVars arg) = do
   List newVars' <- beta env newVars
   vvs <- traverse foo newVars'
   let vvsMap = Map.fromList (V.toList vvs)
   case Map.lookup UntraceVar env of
-    Just v -> let dbg2 = (App v arg) in
-              T.trace (show dbg ++ " NORMALISED TO " ++ show dbg2) (beta (vvsMap `Map.union` env) dbg2)
+    Just v -> do
+      v <- freshen v
+      beta (vvsMap `Map.union` env) (App v arg)
     Nothing -> throwError "unbound SELF"
  where
    foo (Record vv) =
@@ -576,7 +647,11 @@ beta env test@(Lookup v) = do
     Nothing -> throwError $ "unbound selfVar " ++ show v ++ " " ++ show env
 beta env (Indexed e) = do
   e <- beta env e
-  return (Indexed e)
+  case e of
+    Table n typ -> return $ Indexed (Table n typ)
+    List xs -> return $ List (V.imap (\i x -> Record (Map.fromList [ ("p", VText (pack (show i)))
+                                                                   , ("v", x) ])) xs)
+    otherwise -> throwError $ "In indexed: " ++ show otherwise 
 beta env (Untrace _) = undefined
 
 beta' env =
