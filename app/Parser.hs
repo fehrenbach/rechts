@@ -50,8 +50,9 @@ tag = pack <$> (lexeme . try) p
 variable :: Parser Variable
 variable = NamedVar <$> identifier
 
+-- TODO allow type annotations?
 var :: Parser Expr
-var = Var <$> variable
+var = Var Nothing <$> variable
 
 fun :: Parser Expr
 fun = do
@@ -175,7 +176,7 @@ constructor :: Parser Expr
 constructor = do
   n <- tag
   v <- freshVar
-  return (Lam v (Tag n (Var v)))
+  return (Lam v (Tag n (Var Nothing v)))
 
 switch :: Parser Expr
 switch = do

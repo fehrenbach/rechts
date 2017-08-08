@@ -6,7 +6,7 @@ import Prelude hiding (getLine, readFile)
 import Data.Text.IO (getLine, readFile)
 import Syntax
 import Parser (wholeExpr, toplevel)
-import Pretty (printCode)
+import Pretty (printCode, printType)
 import Data.Monoid
 import Data.Text (Text, concat, pack, unpack, splitOn, isPrefixOf)
 import qualified Debug.Trace as T
@@ -18,6 +18,7 @@ import Text.Megaparsec (runParser, ParsecT(..), runParserT', State(..), runParse
 import System.IO (hFlush, stdout)
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.State.Strict (evalStateT, runStateT, MonadState, get, put)
+import Control.Monad.Reader (MonadReader, runReaderT, local, asks)
 import Control.Monad.Except (MonadError, throwError, runExceptT, runExcept)
 
 -- TODO decide what the proper primitive should be
@@ -32,7 +33,7 @@ eval :: Env -> Expr -> Either String Expr
 eval env (VBool b) = Right (VBool b)
 eval env (VInt i) = Right (VInt i)
 eval env (VText s) = Right (VText s)
-eval env (Var v) = case Map.lookup v env of
+eval env (Var _ v) = case Map.lookup v env of
   Just v -> Right v
   Nothing -> Left $ "Unbound variable " ++ show v
 eval env (Lam v e) =
@@ -157,7 +158,7 @@ reflect :: Expr -> Expr
 reflect (VBool b) = Tag "Bool" (VBool b)
 reflect (VInt i) = Tag "Int" (VInt i)
 reflect (VText t) = Tag "Text" (VText t)
-reflect (Var v) = Tag "Var" (reflectVar v)
+reflect (Var _ v) = Tag "Var" (reflectVar v)
 reflect (Lam v e) = Tag "Lam" (Record (Map.fromList [ ("var", reflectVar v)
                                                     , ("body", reflect e) ]))
 reflect (App f a) = Tag "App" (Record (Map.fromList [ ("f", reflect f), ("x", reflect a) ]))
@@ -212,7 +213,7 @@ trace :: MonadState Int m => Expr -> m Expr
 trace b@(VBool _) = mtr "Bool" b b
 trace i@(VInt _) =  mtr "Int" i i
 trace t@(VText _) = mtr "Text" t t
-trace v@(Var vn) = mtr "Var" v (VText (pack (show vn)))
+trace v@(Var _ vn) = mtr "Var" v (VText (pack (show vn)))
 trace l@(Lam v e) = mtr "Lam" l (rec [ ("var", reflectVar v)
                                      , ("body", reflect e) ])
 trace (Eq l r) = do
@@ -230,16 +231,16 @@ trace (For x l b) = do
   yt <- freshVar
   tb <- trace b
   let v = For yv (Proj "v" tl)
-            (For zv (Proj "v" (App (Lam x tb) (Proj "v" (Var yv))))
-               (List (V.singleton (Record (Map.fromList [ ("p", PrependPrefix (Proj "p" (Var zv)) (Proj "p" (Var yv)))
-                                                        , ("v", Proj "v" (Var zv)) ])))))
+            (For zv (Proj "v" (App (Lam x tb) (Proj "v" (Var Nothing yv))))
+               (List (V.singleton (Record (Map.fromList [ ("p", PrependPrefix (Proj "p" (Var Nothing zv)) (Proj "p" (Var Nothing yv)))
+                                                        , ("v", Proj "v" (Var Nothing zv)) ])))))
   mtr "For" v
      (rec [ ("in", tl)
           -- , ("body", reflect b) -- not needed ATM, make my life a bit easier
           , ("var", VText (pack (show x)))
           , ("out", For yt (Proj "v" tl)
-                      (List (V.singleton (Record (Map.fromList [ ("p", Proj "p" (Var yt))
-                                                               , ("t", Proj "t" (App (Lam x tb) (Proj "v" (Var yt))))])))))
+                      (List (V.singleton (Record (Map.fromList [ ("p", Proj "p" (Var Nothing yt))
+                                                               , ("t", Proj "t" (App (Lam x tb) (Proj "v" (Var Nothing yt))))])))))
           ])
 trace (Closure _ _ _) = undefined
 trace (App f x) = do
@@ -252,7 +253,9 @@ trace (Record flds) = do
   mtr "Record" (Record fldsv) (Record fldst)
 trace (Proj l e) = do
   te <- trace e
-  mtr "Proj" (Proj l (Proj "v" te)) (rec [ ("lab", VText l), ("rec", te) ])
+  mtr "Proj" (Proj l (Proj "v" te)) (rec [ ("lab", VText l),
+                                           ("rec", te),
+                                           ("res", Proj l (Proj "t" te)) ])
 trace (If c t e) = do
   ct <- trace c
   tt <- trace t
@@ -276,11 +279,11 @@ trace (Union l r) = do
   mtr "Union"
     (Union
       (For lv (Proj "v" lt)
-        (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "l") (Proj "p" (Var lv))),
-                                                  ("v", Proj "v" (Var lv))])))))
+        (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "l") (Proj "p" (Var Nothing lv))),
+                                                  ("v", Proj "v" (Var Nothing lv))])))))
       (For rv (Proj "v" rt)
-        (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "r") (Proj "p" (Var rv))),
-                                                  ("v", Proj "v" (Var rv))]))))))
+        (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "r") (Proj "p" (Var Nothing rv))),
+                                                  ("v", Proj "v" (Var Nothing rv))]))))))
     (rec [("left", Proj "t" lt), ("right", Proj "t" rt)])
 trace tbl@(Table n _) = do
   let v = Indexed tbl
@@ -294,104 +297,6 @@ trace (RecordMap _ _ _ _) = undefined
 trace (DynProj _ _) = undefined
 trace (Tag _ _) = undefined
 trace (Switch _ _) = undefined
-
-
-{-
-trace :: Expr -> Either String Expr
-trace (VBool b) = tr (VBool b) "Bool" (VBool b)
-trace (VInt i) = tr (VInt i) "Int" (VInt i)
-trace (VText s) = tr (VText s) "Text" (VText s)
-trace (Var v)   = tr (Var v) "Var" (VText (pack (show v))) -- Ugh?
-trace (Lam v e) = tr (Lam v e) "Lam" (rec [ ("var", VText (pack (show v)))
-                                          , ("body", reflect e) ])
-trace (Eq l r) = do
-  lt <- trace l
-  rt <- trace r
-  tr (Eq l r) "Eq" (rec [ ("left", Proj "t" lt)
-                        , ("right", Proj "t" rt)])
-trace (And l r) = do
-  lt <- trace l
-  rt <- trace r
-  tr (And (Proj "v" lt) (Proj "v" rt))
-    "And" (rec [ ("left", Proj "t" lt)
-               , ("right", Proj "t" rt)])
-trace (If c t e) = do
-  ct <- trace c
-  tt <- trace t
-  et <- trace e
-  tr (If c (Proj "v" tt)
-           (Proj "v" et))
-    "If"
-    (rec [ ("condition", Proj "t" ct)
-         , ("branch", Proj "t" (If c tt et)) ])
-trace (App f x) = do
-  ft <- trace f
-  xt <- trace x
-  tr (App (Proj "v" ft) (Proj "v" xt)) "App" (rec [("fun", ft), ("arg", xt)])
-trace (Record flds) = do
-  fldst <- Map.traverseWithKey (\l e -> Proj "t" <$> trace e) flds
-  fldsv <- Map.traverseWithKey (\l e -> Proj "v" <$> trace e) flds
-  tr (Record fldsv) "Record" (Record fldst)
-trace (Proj l e) = do
-  te <- trace e
-  tr (Proj l (Proj "v" te)) "Proj" (rec [ ("lab", VText l)
-                                        , ("rec", te) ])
-trace (Tag t e) = do
-  te <- trace e
-  tr (Tag t e) "Tag" (rec [ ("tag", VText t)
-                          , ("val", Proj "t" te) ])
-trace (Switch e cases) = do
-  te <- trace e
-  casesv <- traverse (\(v, c) -> case trace c of
-                                   Right tc -> Right (v, Proj "v" tc)
-                                   Left err -> Left err)
-            cases
-  cases' <- Map.traverseWithKey (\t (v, c) -> case trace c of
-                                    Right tc -> Right $ (v, Tag "Switch" (Record (Map.fromList [ ("arg", Proj "t" te) -- the switched value
-                                                                                               , ("tag", VText t)  -- matching tag
-                                                                                               , ("var", VText (pack (show v)))  -- the variable
-                                                                                               , ("case", reflect c) ]))) -- the case that matched (reflected)
-                                    Left err -> Left err
-                                    ) cases
-  return (Record (Map.fromList [ ("v", Switch (Proj "v" te) casesv)
-                               , ("t", Switch e cases') ]))
-trace (List es) = do
-  tes <- traverse trace es
-  let labelledValues = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("v", (Proj "v" e))])) tes
-  let labelledTraces = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("t", (Proj "t" e))])) tes
-  let plain = V.map id tes
-  tr (List labelledValues) "List" (List labelledTraces)
-  -- return (Tag "List" (List plain))
-trace (Union l r) = do
-  lt <- trace l
-  rt <- trace r
-  tr (Union (For (GeneratedVar 100) (Proj "v" lt)
-             (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "l") (Proj "p" (Var (GeneratedVar 100)))),
-                                                       ("v", Proj "v" (Var (GeneratedVar 100)))])))))
-      (For (GeneratedVar 101) (Proj "v" rt)
-        (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "r") (Proj "p" (Var (GeneratedVar 101)))),
-                                                  ("v", Proj "v" (Var (GeneratedVar 101)))]))))))
-       "Union"
-       (rec [("left", Proj "t" lt), ("right", Proj "t" rt)])
-trace (For x l b) = do
-  tl <- trace l
-  y <- Right $ GeneratedVar 201
-  z <- Right $ GeneratedVar 202
-  tb <- trace b
-  tr (For y (Proj "v" tl)
-       (For z (Proj "v" (App (Lam x tb) (Proj "v" (Var y))))
-         (List (V.singleton (Record (Map.fromList [ ("p", PrependPrefix (Proj "p" (Var z)) (Proj "p" (Var y)))
-                                                  , ("v", Proj "v" (Var z)) ]))))))
-     "For" (rec [ ("in", tl)
-                , ("body", reflect b)
-                , ("var", VText (pack (show x)))
-                , ("out", For y (Proj "v" tl)
-                            (List (V.singleton (Record (Map.fromList [ ("p", Proj "p" (Var y))
-                                                                     , ("t", Proj "t" (App (Lam x tb) (Proj "v" (Var y))))])))))
-                ])
-trace tbl@(Table n _) = do
-  tr tbl "Table" (VText n)
--}
 
 -- This is a huge fucking mess :( I think I actually might want some
 -- sort of über-monad for my state and env and whatnot to live in
@@ -414,9 +319,9 @@ unsafeLogCode e a = unsafePerformIO $ do
   return a
 
 subst :: Variable -> Variable -> Expr -> Expr
-subst x y (Var z)
-  | x == z = Var y
-  | otherwise = Var z
+subst x y (Var t z)
+  | x == z = Var t y
+  | otherwise = Var t z
 subst x y (Switch a cs) =
   Switch (subst x y a) (fmap (\(v, c) -> if v == x then (v, c) else (v, subst x y c)) cs)
 subst x y (For z a b)
@@ -468,7 +373,7 @@ freshen (RecordMap x kv vv y) = do
   vv' <- freshVar
   y' <- freshen (subst vv vv' (subst kv kv' y))
   return (RecordMap x' kv' vv' y')
-freshen (Var x) = return (Var x)
+freshen (Var t x) = return (Var t x)
 freshen (Lookup x) = Lookup <$> freshen x
 freshen (Indexed x) = Indexed <$> freshen x
 freshen (Proj l x) = Proj l <$> freshen x
@@ -481,6 +386,65 @@ freshen (Record xs) = Record <$> traverse freshen xs
 freshen (Self vars arg) = Self <$> freshen vars <*> freshen arg
 freshen otherwise = error $ show otherwise
 
+elementType :: Type -> Type
+elementType (VectorT et) = et
+
+-- Ugh, I think this idea to avoid putting types into the Expr datatype was a bad one
+typeof :: Expr -> Type
+typeof (VBool _) = BoolT
+typeof (VText _) = TextT
+typeof (For _ _ body) = typeof body
+typeof (Table n t) = VectorT t
+typeof (Record r) = RecordT (fmap typeof r)
+typeof (Proj l e) = case typeof e of
+  RecordT r -> case Map.lookup l r of
+    Just t -> t
+typeof (Tag l e) = VariantT (Map.singleton l (typeof e))
+typeof otherwise = error (show otherwise)
+
+tc :: (MonadReader (Map.Map Variable Type) m,
+       MonadError String m,
+       MonadState Int m) =>
+      Env -> Expr -> m Expr
+tc env (For x a b) = do
+  a' <- tc env a
+  let xt = elementType (typeof a')
+  b' <- local (Map.insert x xt) (tc env b)
+  return (For x a' b')
+tc env (Proj l a) = do
+  a' <- tc env a
+  case typeof a' of
+    RecordT r -> return (Proj l a')
+    _ -> throwError $ "Not a record type in projection"
+tc env (Trace a) = do
+  ta <- trace a
+  tc env ta
+tc env (Record a) = do
+  Record <$> traverse (tc env) a
+tc env (Table n t) = do
+  -- TODO check that table has relation type
+  return (Table n t)
+tc env (Tag l a) =
+  Tag l <$> tc env a
+tc env (VText t) = return (VText t)
+tc env (Indexed a) = do
+  a' <- tc env a
+  case typeof a' of
+    VectorT _ -> return (Indexed a')
+    _ -> throwError $ "argument to indexed must have vector type"
+tc env (Var Nothing v) = do
+  t <- asks (Map.lookup v)
+  -- already got a type in the environment?
+  case t of
+    Just t -> return (Var (Just t) v)
+    Nothing -> case Map.lookup v env of
+      -- variable bound in the global/file environment?
+      Just a -> do
+        a' <- tc env a
+        return (Var (Just (typeof a')) v)
+      Nothing -> throwError $ "unbound variable in type context or global env"
+tc _ otherwise = throwError $ "no tc case for: " ++ show otherwise
+
 beta :: (MonadError String m, MonadState Int m) => Env -> Expr -> m Expr
 -- beta env e | T.trace ("beta " ++ show env ++ " " ++ show e) False = undefined
 -- beta env e | unsafeLogCode e False = undefined
@@ -488,7 +452,7 @@ beta env (VBool b) = return (VBool b)
 beta env (VInt i) = return (VInt i)
 beta env (VText t) = return (VText t)
 -- beta env e@(Var _) | unsafeLogCode e False = undefined
-beta env (Var v) = case Map.lookup v env of
+beta env (Var _ v) = case Map.lookup v env of
   -- This is a bit tricky: when iterating over a table, we bind the
   -- iteration variable to the lookup code, which means v => (Var v)
   -- which runs into an infinite loop if you try to beta reduce it
@@ -549,7 +513,7 @@ beta env (For x i n) = do
     If b m (List empty) | V.null empty -> beta env (If b (For x m n) (List empty))
     -- otherwise -> throwError $ show otherwise
     _ -> do
-      e <- beta (Map.insert x (Var x) env) n
+      e <- beta (Map.insert x (Var (Just (elementType (typeof i))) x) env) n
       return $ For x i e
 beta env (And l r) = do
   l <- beta env l
@@ -680,7 +644,17 @@ repl env pstate = do
                 --                   Right v -> do printValue stdout v
                 --                                 putStrLn ""
                 --
-              case runExcept $ evalStateT (beta' env e) 20000 of
+              -- case runExcept $ evalStateT (beta' env e) 20000 of
+                -- Left err -> putStrLn ("1st stage error: " ++ err)
+                -- Right e -> do
+                  -- printCode stdout e
+                  -- putStrLn ""
+          case runExcept $ flip runReaderT mempty $ evalStateT (tc env e) 10000 of
+            Left err -> putStrLn ("type checking error: " ++ err)
+            Right te -> do
+              printType stdout (typeof te)
+              putStrLn ""
+              case runExcept $ evalStateT (beta' env te) 20000 of
                 Left err -> putStrLn ("1st stage error: " ++ err)
                 Right e -> do
                   printCode stdout e

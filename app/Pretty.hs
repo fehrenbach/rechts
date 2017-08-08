@@ -17,13 +17,26 @@ prettyVariable (GeneratedVar n) = "v_" <> pretty n
 label :: Text -> Doc
 label t = blue (pretty (unpack t))
 
-prettyType _ = "..."
+prettyType BoolT = "Bool"
+prettyType IntT = "Int"
+prettyType TextT = "Text"
+prettyType (VectorT t) = brackets (prettyType t)
+prettyType (RecordT r) = braces (vt (Map.toAscList r))
+  where vt [] = empty
+        vt [(k, t)] = label k <> ":" <+> group (prettyType t)
+        vt ((k, t):tes) = label k <> ":" <+> group (prettyType t) <> "," <$> vt tes
+prettyType (VariantT r) = "[|" <+> vt (Map.toAscList r) <+> "|]"
+  where vt [] = empty
+        vt [(k, t)] = label k <> ":" <+> group (prettyType t)
+        vt ((k, t):tes) = label k <> ":" <+> group (prettyType t) <> "|" <$> vt tes
+prettyType otherwise = pretty (show otherwise)
 
 prettyCode :: Expr -> Doc
 prettyCode (VBool b) = pretty b
 prettyCode (VInt i) = pretty i
 prettyCode (VText t) = "\"" <> pretty (unpack t) <> "\""
-prettyCode (Var v) = prettyVariable v
+prettyCode (Var Nothing v) = prettyVariable v
+prettyCode (Var (Just t) v) = prettyVariable v <> ":" <+> prettyType t
 prettyCode (Record es) =
   braces (align (ke (Map.toAscList es)))
   where
@@ -71,3 +84,6 @@ prettyCode other = string (show other)
 
 printCode :: Handle -> Expr -> IO ()
 printCode h c = displayIO h (renderPretty 0.8 120 (prettyCode c))
+
+printType :: Handle -> Type -> IO ()
+printType h t = displayIO h (renderPretty 0.8 120 (prettyType t))

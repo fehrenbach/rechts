@@ -19,13 +19,15 @@ data Type
   | TextT
   | VectorT Type
   | RecordT (Map.Map Text Type)
+  | VariantT (Map.Map Text Type)
+  | FunT Type Type
   deriving (Show, Eq)
 
 data Expr
   = VBool Bool
   | VInt Int
   | VText Text
-  | Var Variable
+  | Var (Maybe Type) Variable
   | Lam Variable Expr
   | Closure Variable Env Expr
   | Eq Expr Expr

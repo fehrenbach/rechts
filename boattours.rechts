@@ -33,7 +33,7 @@ whr = untrace \t.
       // self [] it.branch
     case Table tt =>
       for (x <- tt.ref)
-        [rmap x with (k = v) => {tbl = tt.name, col = k, row = x.id, data = x!k}]
+        [rmap x with (k = v) => {tbl = tt.name, col = k, row = x.id, data = v}]
     ;
 
 val2 = untrace \t.
