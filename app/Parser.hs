@@ -33,7 +33,7 @@ symbol = L.symbol sc
 parens :: Parser a -> Parser a
 parens = between (symbol "(") (symbol ")")
 
-rws = ["λ", "switch", "case", "if", "then", "else", "trace", "prefixOf", "strip", "rmap", "with", "table", "untrace", "self", "lookup", "indexed" ]
+rws = ["λ", "switch", "case", "if", "then", "else", "trace", "prefixOf", "strip", "rmap", "with", "table", "view", "self", "lookup", "indexed", "untrace" ]
 
 identifier :: Parser Text
 identifier = pack <$> (lexeme . try) (p >>= check)
@@ -102,13 +102,13 @@ table = do
 
 term :: Parser Expr
 term =
-  try constant <|> fun <|> record <|> list <|> switch <|> for <|> trace <|> table <|> try var <|> constructor <|> ifthenelse <|> rmap <|> untrace <|> self <|> lookup <|> indexed <|> parens expr
+  try constant <|> fun <|> record <|> list <|> switch <|> for <|> trace <|> table <|> try var <|> constructor <|> ifthenelse <|> rmap <|> view <|> self <|> untrace <|> lookup <|> indexed <|> parens expr
 
-untrace :: Parser Expr
-untrace = do
-  try $ symbol "untrace"
+view :: Parser Expr
+view = do
+  try $ symbol "view"
   e <- expr
-  return (Untrace e)
+  return (View e)
 
 self :: Parser Expr
 self = do
@@ -117,11 +117,19 @@ self = do
   e <- expr
   return (Self l e)
 
+untrace :: Parser Expr
+untrace = do
+  try $ symbol "untrace"
+  e <- expr
+  symbol "with"
+  v <- expr
+  return (Untrace v e)
+
 lookup :: Parser Expr
 lookup = do
   try $ symbol "lookup"
   v <- expr
-  return (Lookup v)
+  return (Lookup Nothing v)
 
 indexed :: Parser Expr
 indexed = do

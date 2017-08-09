@@ -7,7 +7,7 @@ import qualified Data.Map.Strict as Map
 data Variable
   = NamedVar Text
   | GeneratedVar Int
-  | UntraceVar
+  | ViewVar
   | SelfVar Text
   deriving (Eq, Ord, Show)
 
@@ -43,13 +43,15 @@ data Expr
   | PrependPrefix Expr Expr
   | PrefixOf Expr Expr
   | StripPrefix Expr Expr
-  | Trace Expr
   | RecordMap Expr Variable Variable Expr
   | Table Text Type
-  | Untrace Expr
-  | Self Expr Expr
-  | Lookup Expr
+  | Lookup (Maybe Expr) Expr
   | Indexed Expr -- indexed : [a] -> [{p : PrefixLabel, v : a}]
+  | Untrace Expr Expr -- this is flipped in parser: untrace te with ve == Untrace ve te
+  | View Expr
+  | Self Expr Expr
+  | Trace Expr
+  | Undefined Text
   deriving (Show, Eq)
 
 data Stmt

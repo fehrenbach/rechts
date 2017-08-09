@@ -1,4 +1,4 @@
-val = untrace \t.
+val = view \t.
   switch t
     case Var v => lookup v
     case Int i => i
@@ -25,7 +25,7 @@ val = untrace \t.
     //     self [{var = ft.var, val = self [] inpt.t}] relevantoutt.t
     ;
 
-whr = untrace \t.
+whr = view \t.
   switch t
     // case Var v => lookup v
     // case Int i => i
@@ -36,7 +36,21 @@ whr = untrace \t.
         [rmap x with (k = v) => {tbl = tt.name, col = k, row = x.id, data = x!k}]
     ;
 
-val2 = untrace \t.
+test = view \t.
+  switch t
+    case Int i => i
+    case List lt =>
+      for (xt <- lt)
+        [self [] xt.t]
+    // case Var v => lookup v
+    // case For ft =>
+    //   for (inpv <- (ft.in).v)
+    //   // I think the == there might be wrong, shouldn't this be a prefix?
+    //   for (relevantoutt <- for (outt <- ft.out) if (outt.p == inpv.p) then [outt] else [])
+    //     self [{var = ft.var, val = inpv.v}] relevantoutt.t
+  ;
+
+val2 = view \t.
   switch t
     case Var v => lookup v
     case Table tt => tt.ref
@@ -113,7 +127,7 @@ qt = for (a <- table "agencies" {name: Text, basedin: Text, phone: Text}) for (e
 
 // t = trace 1;
 
-// value = untrace \tv.
+// value = view \tv.
 //   switch tv.t
 //     case Int i => i
 //     case List lt =>

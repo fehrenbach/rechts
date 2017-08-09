@@ -19,6 +19,8 @@ import System.IO (hFlush, stdout)
 import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.State.Strict (evalStateT, runStateT, MonadState, get, put)
 import Control.Monad.Except (MonadError, throwError, runExceptT, runExcept)
+import Control.Monad.Reader (MonadReader, runReaderT, local, asks)
+import Control.Monad (replicateM)
 
 -- TODO decide what the proper primitive should be
 -- Currently this is by length only, which seems either overkill or dangerous, or both
@@ -84,7 +86,7 @@ eval env (Union l r) = do
   return (List $ ls V.++ rs)
 eval env (For x l e) = case eval env l of
   Right (List l) ->
-    let vs = traverse (\v -> 
+    let vs = traverse (\v ->
                           case eval (Map.insert x v env) e of
                             Right (List r) -> Right r
                             Right x -> Left $ "body of a for comprehension did not return a list: " ++ show x
@@ -120,23 +122,23 @@ eval env (DynProj l r) = do
     Nothing -> Left $ "Can't find (dynamic) label " ++ show l ++ " in record " ++ show rec
     Just v -> Right v
 eval env (Table _ _) = Right (List mempty) -- TODO
-eval env (Untrace e) = eval (Map.insert UntraceVar e env) e
+eval env (View e) = return (View e) -- eval (Map.insert ViewVar e env) e
 eval env (Self newBindings arg) = do
   List vvs <- eval env newBindings
   let Just vvs' = traverse foo vvs
   let vvsMap = Map.fromList (V.toList vvs')
-  case Map.lookup UntraceVar env of
+  case Map.lookup ViewVar env of
     Just e -> eval (vvsMap `Map.union` env) (App e arg)
-    Nothing -> Left $ "Untrace variable is unbound -- are you inside an Untrace block?"
+    Nothing -> Left $ "View variable is unbound -- are you inside an View block?"
  where
    foo :: Expr -> Maybe (Variable, Expr)
    foo (Record vv) = do
      VText var <- Map.lookup "var" vv
      val <- Map.lookup "val" vv
      return (SelfVar var, val)
-eval env (Lookup v) = do
+eval env (Lookup Nothing v) = do
   case eval env v of
-    Right (VText v) -> 
+    Right (VText v) ->
       case Map.lookup (SelfVar v) env of
         Just v -> Right $ v
         Nothing -> Left $ "Unbound self variable " ++ show v
@@ -149,6 +151,11 @@ eval env (Indexed e) = do
                                                                  , ("v", x) ])) xs))
     Table _ _ -> Right (List mempty)
     _ -> Left $ "in indexed: argument not a list or table"
+eval env (Untrace v e) = do
+  e' <- eval env e
+  v' <- eval env v
+  case v' of
+    View v'' -> eval (Map.insert ViewVar v'' env) (App v'' e')
 
 reflectVar :: Variable -> Expr
 reflectVar v = VText (pack (show v)) -- TODO make better
@@ -260,7 +267,7 @@ trace (If c t e) = do
   mtr "If"
     (If c (Proj "v" tt)
           (Proj "v" et))
-    (rec [ -- ("condition", Proj "t" ct) -- not needed ATM, so remove to make my life easier 
+    (rec [ -- ("condition", Proj "t" ct) -- not needed ATM, so remove to make my life easier
           ("branch", Proj "t" (If c tt et)) ])
 trace (List es) = do
   tes <- traverse trace es
@@ -294,104 +301,7 @@ trace (RecordMap _ _ _ _) = undefined
 trace (DynProj _ _) = undefined
 trace (Tag _ _) = undefined
 trace (Switch _ _) = undefined
-
-
-{-
-trace :: Expr -> Either String Expr
-trace (VBool b) = tr (VBool b) "Bool" (VBool b)
-trace (VInt i) = tr (VInt i) "Int" (VInt i)
-trace (VText s) = tr (VText s) "Text" (VText s)
-trace (Var v)   = tr (Var v) "Var" (VText (pack (show v))) -- Ugh?
-trace (Lam v e) = tr (Lam v e) "Lam" (rec [ ("var", VText (pack (show v)))
-                                          , ("body", reflect e) ])
-trace (Eq l r) = do
-  lt <- trace l
-  rt <- trace r
-  tr (Eq l r) "Eq" (rec [ ("left", Proj "t" lt)
-                        , ("right", Proj "t" rt)])
-trace (And l r) = do
-  lt <- trace l
-  rt <- trace r
-  tr (And (Proj "v" lt) (Proj "v" rt))
-    "And" (rec [ ("left", Proj "t" lt)
-               , ("right", Proj "t" rt)])
-trace (If c t e) = do
-  ct <- trace c
-  tt <- trace t
-  et <- trace e
-  tr (If c (Proj "v" tt)
-           (Proj "v" et))
-    "If"
-    (rec [ ("condition", Proj "t" ct)
-         , ("branch", Proj "t" (If c tt et)) ])
-trace (App f x) = do
-  ft <- trace f
-  xt <- trace x
-  tr (App (Proj "v" ft) (Proj "v" xt)) "App" (rec [("fun", ft), ("arg", xt)])
-trace (Record flds) = do
-  fldst <- Map.traverseWithKey (\l e -> Proj "t" <$> trace e) flds
-  fldsv <- Map.traverseWithKey (\l e -> Proj "v" <$> trace e) flds
-  tr (Record fldsv) "Record" (Record fldst)
-trace (Proj l e) = do
-  te <- trace e
-  tr (Proj l (Proj "v" te)) "Proj" (rec [ ("lab", VText l)
-                                        , ("rec", te) ])
-trace (Tag t e) = do
-  te <- trace e
-  tr (Tag t e) "Tag" (rec [ ("tag", VText t)
-                          , ("val", Proj "t" te) ])
-trace (Switch e cases) = do
-  te <- trace e
-  casesv <- traverse (\(v, c) -> case trace c of
-                                   Right tc -> Right (v, Proj "v" tc)
-                                   Left err -> Left err)
-            cases
-  cases' <- Map.traverseWithKey (\t (v, c) -> case trace c of
-                                    Right tc -> Right $ (v, Tag "Switch" (Record (Map.fromList [ ("arg", Proj "t" te) -- the switched value
-                                                                                               , ("tag", VText t)  -- matching tag
-                                                                                               , ("var", VText (pack (show v)))  -- the variable
-                                                                                               , ("case", reflect c) ]))) -- the case that matched (reflected)
-                                    Left err -> Left err
-                                    ) cases
-  return (Record (Map.fromList [ ("v", Switch (Proj "v" te) casesv)
-                               , ("t", Switch e cases') ]))
-trace (List es) = do
-  tes <- traverse trace es
-  let labelledValues = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("v", (Proj "v" e))])) tes
-  let labelledTraces = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("t", (Proj "t" e))])) tes
-  let plain = V.map id tes
-  tr (List labelledValues) "List" (List labelledTraces)
-  -- return (Tag "List" (List plain))
-trace (Union l r) = do
-  lt <- trace l
-  rt <- trace r
-  tr (Union (For (GeneratedVar 100) (Proj "v" lt)
-             (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "l") (Proj "p" (Var (GeneratedVar 100)))),
-                                                       ("v", Proj "v" (Var (GeneratedVar 100)))])))))
-      (For (GeneratedVar 101) (Proj "v" rt)
-        (List (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "r") (Proj "p" (Var (GeneratedVar 101)))),
-                                                  ("v", Proj "v" (Var (GeneratedVar 101)))]))))))
-       "Union"
-       (rec [("left", Proj "t" lt), ("right", Proj "t" rt)])
-trace (For x l b) = do
-  tl <- trace l
-  y <- Right $ GeneratedVar 201
-  z <- Right $ GeneratedVar 202
-  tb <- trace b
-  tr (For y (Proj "v" tl)
-       (For z (Proj "v" (App (Lam x tb) (Proj "v" (Var y))))
-         (List (V.singleton (Record (Map.fromList [ ("p", PrependPrefix (Proj "p" (Var z)) (Proj "p" (Var y)))
-                                                  , ("v", Proj "v" (Var z)) ]))))))
-     "For" (rec [ ("in", tl)
-                , ("body", reflect b)
-                , ("var", VText (pack (show x)))
-                , ("out", For y (Proj "v" tl)
-                            (List (V.singleton (Record (Map.fromList [ ("p", Proj "p" (Var y))
-                                                                     , ("t", Proj "t" (App (Lam x tb) (Proj "v" (Var y))))])))))
-                ])
-trace tbl@(Table n _) = do
-  tr tbl "Table" (VText n)
--}
+trace (View _) = undefined
 
 -- This is a huge fucking mess :( I think I actually might want some
 -- sort of über-monad for my state and env and whatnot to live in
@@ -411,7 +321,19 @@ staticEq l r = Nothing
 unsafeLogCode :: Expr -> a -> a
 unsafeLogCode e a = unsafePerformIO $ do
   printCode stdout e
+  putStrLn ""
   return a
+
+unsafeLogEnv :: (Map.Map Variable b) -> a -> a
+unsafeLogEnv e a = unsafePerformIO $ do
+  putStrLn (show (Map.keys e))
+  return a
+
+unsafeLogCode' :: Expr -> Expr
+unsafeLogCode' c = unsafePerformIO $ do
+  printCode stdout c
+  putStrLn ""
+  return c
 
 subst :: Variable -> Variable -> Expr -> Expr
 subst x y (Var z)
@@ -426,8 +348,8 @@ subst x y (RecordMap arg kv vv e)
   | kv == x = RecordMap (subst x y arg) kv vv e
   | vv == x = RecordMap (subst x y arg) kv vv e
   | otherwise = RecordMap (subst x y arg) kv vv (subst x y e)
-subst x y (Lookup a) =
-  Lookup (subst x y a)  
+subst x y (Lookup Nothing a) =
+  Lookup Nothing (subst x y a)
 subst x y (Indexed a) =
   Indexed (subst x y a)
 subst x y (Proj l a) =
@@ -469,7 +391,7 @@ freshen (RecordMap x kv vv y) = do
   y' <- freshen (subst vv vv' (subst kv kv' y))
   return (RecordMap x' kv' vv' y')
 freshen (Var x) = return (Var x)
-freshen (Lookup x) = Lookup <$> freshen x
+freshen (Lookup Nothing x) = Lookup Nothing <$> freshen x
 freshen (Indexed x) = Indexed <$> freshen x
 freshen (Proj l x) = Proj l <$> freshen x
 freshen (If a b c) = If <$> freshen a <*> freshen b <*> freshen c
@@ -480,6 +402,43 @@ freshen (List xs) = List <$> traverse freshen xs
 freshen (Record xs) = Record <$> traverse freshen xs
 freshen (Self vars arg) = Self <$> freshen vars <*> freshen arg
 freshen otherwise = error $ show otherwise
+
+substSelf ev s (Self newVars arg) = App (App s (Union newVars (Var ev))) arg
+substSelf ev s x@(Var _) = x
+substSelf ev s (Lookup Nothing a) = Lookup (Just (Var ev)) (substSelf ev s a)
+substSelf ev s (Lam x a) = Lam x (substSelf ev s a)
+substSelf ev s (Proj x a) = Proj x (substSelf ev s a)
+substSelf ev s (List as) = List (fmap (substSelf ev s) as)
+substSelf ev s (Record as) = Record (fmap (substSelf ev s) as)
+substSelf ev s (Switch a bs) = Switch (substSelf ev s a) (fmap (\(v, b) -> (v, substSelf ev s b)) bs)
+substSelf ev s (Eq a b) = Eq (substSelf ev s a) (substSelf ev s b)
+substSelf ev s (Union a b) = Union (substSelf ev s a) (substSelf ev s b)
+substSelf ev s (DynProj a b) = DynProj (substSelf ev s a) (substSelf ev s b)
+substSelf ev s (For v a b) = For v (substSelf ev s a) (substSelf ev s b)
+substSelf ev s (RecordMap a x y b) = RecordMap (substSelf ev s a) x y (substSelf ev s b)
+substSelf ev s (If a b c) = If (substSelf ev s a) (substSelf ev s b) (substSelf ev s c)
+substSelf ev s otherwise = error $ "SUBSTSELF " ++  (show otherwise)
+
+unroll 0 ev view = Undefined "did not unroll often enough"
+unroll n (ev:rest) view = Lam ev (substSelf ev (unroll (n-1) rest view) view) -- substSelf ev (Lam ev (unroll (n-1) ev view)) view
+
+-- get rid of all tracing related stuff
+desugar (Untrace (Var v) a) = do
+  a' <- desugar a
+  v' <- asks (Map.lookup v)
+  case v' of
+    Just (View v'') -> do
+      let steps = 10
+      vars <- replicateM steps freshVar
+      return (App (App (unroll steps vars v'') (List mempty)) a')
+    _ -> throwError $ "Variable " ++ show v ++ " did not evaluate to a VIEW"
+desugar (Untrace notavar _) = throwError $ "For now, the first argument to UNTRACE has to be a variable referring to a VIEW, but is: " ++ show notavar
+desugar (Trace a) = trace a
+desugar v@(View _) = return v
+desugar s@(Self _ _) = return s
+desugar t@(Table _ _) = return t
+desugar (Proj l a) = Proj l <$> desugar a
+desugar otherwise = throwError $ "DESUGAR: " ++ show otherwise
 
 beta :: (MonadError String m, MonadState Int m) => Env -> Expr -> m Expr
 -- beta env e | T.trace ("beta " ++ show env ++ " " ++ show e) False = undefined
@@ -497,11 +456,13 @@ beta env (Var v) = case Map.lookup v env of
   -- over where we actually resolve variables?
   Just v -> return v
   Nothing -> throwError $ "unbound variable " ++ show v
+-- beta env e@(App _ _) | unsafeLogEnv env False = undefined
+-- beta env e@(App _ _) | unsafeLogCode e False = undefined
 beta env (App f arg) = do
   f <- beta env f
   arg <- beta env arg
   case f of
-    Lam v body -> beta (Map.insert v arg env) body -- can this even happen?
+    -- Lam v body -> beta (Map.insert v arg env) body -- can this even happen?
     Closure v cenv body -> beta (Map.insert v arg cenv) body -- not sure about this
     _ -> throwError $ "not a function " ++ show f
 beta env (Proj l e) = do
@@ -591,7 +552,9 @@ beta env (Trace e) = do
   put varC'
   v <- beta env e' -- in what env?
   return v
-beta env (Lam v e) = return (Lam v e) -- not so sure about this one...
+beta env (Lam v e) =
+  return (Closure v env e)
+  -- return (Lam v e) -- not so sure about this one...
 -- beta env (Closure v cenv e) =
   -- return (Closure v cenv e)
 beta env (PrependPrefix l r) = do
@@ -628,7 +591,7 @@ beta env dbg@(Self newVars arg) = do
   List newVars' <- beta env newVars
   vvs <- traverse foo newVars'
   let vvsMap = Map.fromList (V.toList vvs)
-  case Map.lookup UntraceVar env of
+  case Map.lookup ViewVar env of
     Just v -> do
       v <- freshen v
       beta (vvsMap `Map.union` env) (App v arg)
@@ -640,19 +603,26 @@ beta env dbg@(Self newVars arg) = do
          Just val -> return (SelfVar var, val)
          Nothing -> throwError $ "No field val in key value binding record"
        Nothing -> throwError $ "No field var in key value binding record"
-beta env test@(Lookup v) = do
-  (VText v) <- beta env v
-  case Map.lookup (SelfVar v) env of
-    Just v -> return v
-    Nothing -> throwError $ "unbound selfVar " ++ show v ++ " " ++ show env
+beta env test@(Lookup (Just analysisEnv) x) = do
+  x' <- beta env x
+  List l <- beta env analysisEnv
+  case V.find (\(Record r) -> case Map.lookup "var" r of
+                                Just var -> var == x'
+                                Nothing -> False) l of
+    Just (Record r) -> case Map.lookup "val" r of
+                         Just res -> return res
+                         Nothing -> throwError "No val field"
+    Nothing -> throwError $ "no binding for " ++ show x'
 beta env (Indexed e) = do
   e <- beta env e
   case e of
     Table n typ -> return $ Indexed (Table n typ)
     List xs -> return $ List (V.imap (\i x -> Record (Map.fromList [ ("p", VText (pack (show i)))
                                                                    , ("v", x) ])) xs)
-    otherwise -> throwError $ "In indexed: " ++ show otherwise 
-beta env (Untrace _) = undefined
+    otherwise -> throwError $ "In indexed: " ++ show otherwise
+beta env (View _) = throwError $ "There should not be a VIEW left"
+beta env (Undefined reason) = throwError $ "Tried to beta reduce UNDEFINED: " ++ unpack reason
+beta env otherwise = throwError $ "BETA case missing: " ++ show otherwise
 
 beta' env =
   beta env
@@ -666,27 +636,33 @@ repl env pstate = do
     Right (e, pstate) -> do
       -- putStrLn (show e)
       case eval env e of
-        Left err -> putStrLn ("ERROR: " ++ show err)
+        Left err -> putStrLn ("EVAL error: " ++ show err)
         Right v -> do
           printCode stdout v
           putStrLn ""
-          case evalStateT (trace e) 5500 of
-            Left err -> putStrLn ("TRACE REWRITING ERROR: " ++ err)
-            Right t -> do
-              -- printCode stdout t; putStrLn ""
-              putStrLn "trace code omitted"
-                --                 case eval env t of -- Not sure about this env here. Should this be a traced env?
-                --                   Left err -> putStrLn ("TRACED EVALUATION ERROR: " ++ show err)
-                --                   Right v -> do printValue stdout v
-                --                                 putStrLn ""
-                --
-              case runExcept $ evalStateT (beta' env e) 20000 of
-                Left err -> putStrLn ("1st stage error: " ++ err)
-                Right e -> do
-                  printCode stdout e
-                  putStrLn ""
+          -- case evalStateT (trace e) 5500 of
+          --   Left err -> putStrLn ("TRACE REWRITING ERROR: " ++ err)
+          --   Right t -> do
+          --     -- printCode stdout t; putStrLn ""
+          --     putStrLn "trace code omitted"
+          --       --                 case eval env t of -- Not sure about this env here. Should this be a traced env?
+          --       --                   Left err -> putStrLn ("TRACED EVALUATION ERROR: " ++ show err)
+          --       --                   Right v -> do printValue stdout v
+          --       --                                 putStrLn ""
+          --       --
+      case runExcept $ flip runReaderT env $ evalStateT (desugar e) 10000 of
+        Left err -> putStrLn ("DESUGAR error: " ++ show err)
+        Right de -> do
+          -- printCode stdout de
+          -- putStrLn ""
+          putStrLn "desugared code omitted"
+          case runExcept $ evalStateT (beta' env de) 20000 of
+            Left err -> putStrLn ("1st stage error: " ++ err)
+            Right e -> do
+              printCode stdout e
+              putStrLn ""
   repl env pstate
-                      
+
 
 sLoop :: Env -> [Stmt] -> IO (Either String Env)
 sLoop env s = case s of
