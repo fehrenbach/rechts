@@ -506,6 +506,25 @@ tc env (List Nothing as) = do
                     uniEq elt (typeof a)
                     return a) as
   return (List (Just elt) as)
+tc env (Switch a bs) = do
+  a <- tc env a
+  res <- freshTVar
+  case typeof a of
+    VariantT vart -> do
+      bs <- Map.traverseWithKey
+        (\act _ -> case Map.lookup act bs of
+                     Just (caseVar, caseBody) -> do
+                       caseBody <- local (Map.insert caseVar (typeof a)) (tc env caseBody)
+                       uniEq res (typeof caseBody)
+                       return (caseVar, caseBody)
+                     Nothing -> throwError $ "No case for " ++ show act) vart
+      return (Switch a bs)
+    -- FUCK. This can be a type variable. Looks like I need to either
+    -- solve constraints and apply substitutions throughout or somehow
+    -- reconstruct types bottom-up, without all this constraint
+    -- business.
+    otherwise ->
+      throwError $ "argument to switch has non-variant type: " ++ show a ++ ": " ++ show otherwise
 tc _ otherwise = throwError $ "no tc case for: " ++ show otherwise
 
 substSelf ev s (Self newVars arg) = App (App s (Union newVars (Var Nothing ev))) arg
