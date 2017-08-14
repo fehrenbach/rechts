@@ -50,7 +50,7 @@ prettyCode (List _ es) =
     ke [e] = group $ prettyCode e
     ke (e:es) = group (prettyCode e) <> "," <$> ke es
 prettyCode (Tag t e) = parens $ align $ green (pretty (unpack t)) </> prettyCode e
-prettyCode (Switch e cs) = hang 2 $ magenta "switch" <+> prettyCode e <$> cases (Map.toAscList cs)
+prettyCode (Switch _ e cs) = hang 2 $ magenta "switch" <+> prettyCode e <$> cases (Map.toAscList cs)
   where
     cases [] = empty
     cases [c] = case' c

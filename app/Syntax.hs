@@ -20,8 +20,12 @@ data Type
   | VectorT Type
   | RecordT (Map.Map Text Type)
   | VariantT (Map.Map Text Type)
+  -- No. These should just be VariantT/RecordT over abstractions.
+  | SwitchT Type (Map.Map Text (Type, Type)) -- typevar -> type
+  | RecordMapT Type (Map.Map Text (Type, Type))
   | FunT Type Type
   | TyVar Int
+  | AbsurdT
   deriving (Show, Eq, Ord)
 
 data Expr
@@ -38,7 +42,7 @@ data Expr
   | Proj Text Expr
   | DynProj Expr Expr -- this is flipped for little good reason: a!b == DynProj b a
   | Tag Text Expr
-  | Switch Expr (Map.Map Text (Variable, Expr))
+  | Switch (Maybe Type) Expr (Map.Map Text (Variable, Expr))
   | If Expr Expr Expr
   | List (Maybe Type) (V.Vector Expr)
   | Union Expr Expr

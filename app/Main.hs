@@ -21,7 +21,7 @@ import System.IO.Unsafe (unsafePerformIO)
 import Control.Monad.State.Strict (evalStateT, runStateT, MonadState, get, put)
 import Control.Monad.Reader (MonadReader, runReaderT, local, asks)
 import Control.Monad.Except (MonadError, throwError, runExceptT, runExcept)
-import Control.Monad.Writer (MonadWriter, runWriterT, tell)
+import Control.Monad.Writer (MonadWriter, runWriterT, tell, pass)
 import Control.Monad (replicateM)
 
 -- TODO decide what the proper primitive should be
@@ -72,7 +72,7 @@ eval env (Proj l r) =
 eval env (Tag t e) = do
   e' <- eval env e
   return (Tag t e')
-eval env (Switch e cases) = do
+eval env (Switch Nothing e cases) = do
   tagged <- eval env e
   case tagged of
     Tag l v -> case Map.lookup l cases of
@@ -175,7 +175,7 @@ reflect (Proj l e) = Tag "Proj" (Record (Map.fromList [ ("l", VText l)
                                                       , ("r", reflect e) ])) -- call "w" for "consistency"?
 reflect (Tag t e) = Tag "Tag" (Record (Map.fromList [ ("t", VText t)
                                                     , ("v", reflect e) ]))
-reflect (Switch e cs) = Tag "Switch" (Record (Map.fromList [ ("e", reflect e)
+reflect (Switch Nothing e cs) = Tag "Switch" (Record (Map.fromList [ ("e", reflect e)
                                                            , ("cs", cases) ]))
   where
     cases :: Expr
@@ -311,7 +311,7 @@ trace (StripPrefix _ _) = undefined
 trace (RecordMap _ _ _ _) = undefined
 trace (DynProj _ _) = undefined
 trace (Tag _ _) = undefined
-trace (Switch _ _) = undefined
+trace (Switch Nothing _ _) = undefined
 trace (View _) = undefined
 
 -- This is a huge fucking mess :( I think I actually might want some
@@ -350,8 +350,8 @@ subst :: Variable -> Variable -> Expr -> Expr
 subst x y (Var t z)
   | x == z = Var t y
   | otherwise = Var t z
-subst x y (Switch a cs) =
-  Switch (subst x y a) (fmap (\(v, c) -> if v == x then (v, c) else (v, subst x y c)) cs)
+subst x y (Switch Nothing a cs) =
+  Switch Nothing (subst x y a) (fmap (\(v, c) -> if v == x then (v, c) else (v, subst x y c)) cs)
 subst x y (For z a b)
   | x == z = For z (subst x y a) b
   | otherwise = For z (subst x y a) (subst x y b)
@@ -391,10 +391,10 @@ freshen (Lam Nothing x y) = do
   x' <- freshVar
   y' <- freshen (subst x x' y)
   return (Lam Nothing x' y')
-freshen (Switch x ys) = do
+freshen (Switch Nothing x ys) = do
   x' <- freshen x
   ys' <- traverse (\(v, y) -> (v,) <$> freshen y) ys
-  return (Switch x' ys')
+  return (Switch Nothing x' ys')
 freshen (RecordMap x kv vv y) = do
   x' <- freshen x
   kv' <- freshVar
@@ -434,14 +434,24 @@ typeof (App f x) = case typeof f of
 typeof (Lam (Just t) _ _) = t
 typeof (Var (Just t) _) = t
 typeof (List (Just t) _) = VectorT t
+typeof (Switch (Just t) _ _) = t
 typeof otherwise = error (show otherwise)
 
-data Constraint =
-  EqC Type Type
+data Constraint
+  = EqC Type Type
+  | VariantLabelHasType Type Text Type
+  | RecordLabelHasType  Type Text Type
  deriving (Eq, Ord, Show)
 
 uniEq x y =
   tell (Set.singleton (EqC x y))
+
+uniVariantLabelHasType v l t =
+  tell (Set.singleton (VariantLabelHasType v l t))
+
+uniRecordLabelHasType r l t =
+  tell (Set.singleton (RecordLabelHasType r l t))
+
 
 tc :: (MonadReader (Map.Map Variable Type) m,
        MonadError String m,
@@ -468,15 +478,19 @@ tc env (For x a b) = do
   b' <- local (Map.insert x xt) (tc env b)
   return (For x a' b')
 tc env (Proj l a) = do
-  a' <- tc env a
-  case typeof a' of
-    RecordT r -> return (Proj l a')
-    _ -> throwError $ "Not a record type in projection"
+  a <- tc env a
+  res <- freshTVar
+  uniRecordLabelHasType (typeof a) l res
+  return (Proj l a)
+tc env (Record a) = do
+  Record <$> traverse (tc env) a
+tc env (RecordMap a kv vv b) = do
+  a <- tc env a
+  res <- freshTVar
+  
 tc env (Trace a) = do
   ta <- trace a
   tc env ta
-tc env (Record a) = do
-  Record <$> traverse (tc env) a
 tc env (Table n t) = do
   -- TODO check that table has relation type
   return (Table n t)
@@ -506,26 +520,72 @@ tc env (List Nothing as) = do
                     uniEq elt (typeof a)
                     return a) as
   return (List (Just elt) as)
-tc env (Switch a bs) = do
+tc env (Switch Nothing a bs) = do
   a <- tc env a
   res <- freshTVar
-  case typeof a of
-    VariantT vart -> do
-      bs <- Map.traverseWithKey
-        (\act _ -> case Map.lookup act bs of
-                     Just (caseVar, caseBody) -> do
-                       caseBody <- local (Map.insert caseVar (typeof a)) (tc env caseBody)
-                       uniEq res (typeof caseBody)
-                       return (caseVar, caseBody)
-                     Nothing -> throwError $ "No case for " ++ show act) vart
-      return (Switch a bs)
-    -- FUCK. This can be a type variable. Looks like I need to either
-    -- solve constraints and apply substitutions throughout or somehow
-    -- reconstruct types bottom-up, without all this constraint
-    -- business.
-    otherwise ->
-      throwError $ "argument to switch has non-variant type: " ++ show a ++ ": " ++ show otherwise
+  bs <- Map.traverseWithKey (\l (v, b) -> do
+                                t <- freshTVar
+                                uniVariantLabelHasType (typeof a) l t
+                                b <- local (Map.insert v t) (tc env b)
+                                return $ ((t, typeof b), (v, b))) bs
+  uniEq res (SwitchT (typeof a) (fmap fst bs))
+  return $ Switch (Just res) a (fmap snd bs)
 tc _ otherwise = throwError $ "no tc case for: " ++ show otherwise
+
+substT s (TyVar z) = case Map.lookup z s of
+  Just y -> y
+  Nothing -> TyVar z
+substT s BoolT = BoolT
+substT s IntT = IntT
+substT s TextT = TextT
+substT s AbsurdT = AbsurdT
+substT s (FunT a b) = FunT (substT s a) (substT s b)
+substT s (VectorT a) = VectorT (substT s a)
+substT s (RecordT a) = RecordT (fmap (substT s) a)
+substT s (VariantT a) = VariantT (fmap (substT s) a)
+substT s (SwitchT a b) = case substT s a of
+  VariantT v ->
+    case Map.toList v of
+      [(label, typ)] -> case Map.lookup label b of
+        Just (TyVar bound, b) -> substT (Map.insert bound typ s) b
+        -- Nothing -> AbsurdT
+  otherwise -> SwitchT otherwise (fmap (\(l, c) -> (l, substT s c)) b)
+
+substC s (EqC a b) = EqC (substT s a) (substT s b)
+substC s (VariantLabelHasType v l t) = VariantLabelHasType (substT s v) l (substT s t)
+
+applySubst s x@(VInt _) = x
+applySubst s x@(VBool _) = x
+applySubst s x@(VText _) = x
+applySubst s (App a b) = App (applySubst s a) (applySubst s b)
+applySubst s (Lam (Just t) v a) = Lam (Just (substT s t)) v (applySubst s a)
+applySubst s (Tag t a) = Tag t (applySubst s a)
+applySubst s (Var (Just t) x) = Var (Just (substT s t)) x
+applySubst s (Switch (Just t) a bs) = Switch (Just (substT s t)) (applySubst s a) (fmap (\(v, b) -> (v, applySubst s b)) bs)
+applySubst s (List (Just t) a) = List (Just (substT s t)) (fmap (applySubst s) a)
+applySubst s otherwise = error $ "APPLYSUBST " ++ show otherwise
+
+solve :: (MonadError String m) => Map.Map Int Type -> [Constraint] -> m (Map.Map Int Type)
+solve s [] = return s
+solve s (c : cs) = case c of
+  EqC (TyVar v) t ->
+    let s' = Map.insert v t (fmap (substT (Map.singleton v t)) s)
+    in solve s' (fmap (substC s') cs)
+  EqC t (TyVar v) ->
+    let s' = Map.insert v t (fmap (substT (Map.singleton v t)) s)
+    in solve s' (fmap (substC s') cs)
+  EqC (FunT a b) (FunT c d) -> solve s ([EqC a c, EqC b d] ++ cs)
+  VariantLabelHasType (VariantT variant) l (TyVar v)
+    | Map.size variant == 1 ->
+      case Map.lookup l variant of
+        Just t ->
+          let s' = Map.insert v t (fmap (substT (Map.singleton v t)) s)
+          in solve s' (fmap (substC s') cs)
+        Nothing ->
+          let t = AbsurdT 
+              s' = Map.insert v t (fmap (substT (Map.singleton v t)) s)
+          in solve s' (fmap (substC s') cs)
+  otherwise -> throwError $ "todo solve " ++ show otherwise
 
 substSelf ev s (Self newVars arg) = App (App s (Union newVars (Var Nothing ev))) arg
 substSelf ev s x@(Var Nothing _) = x
@@ -534,7 +594,7 @@ substSelf ev s (Lam Nothing x a) = Lam Nothing x (substSelf ev s a)
 substSelf ev s (Proj x a) = Proj x (substSelf ev s a)
 substSelf ev s (List Nothing as) = List Nothing (fmap (substSelf ev s) as)
 substSelf ev s (Record as) = Record (fmap (substSelf ev s) as)
-substSelf ev s (Switch a bs) = Switch (substSelf ev s a) (fmap (\(v, b) -> (v, substSelf ev s b)) bs)
+substSelf ev s (Switch Nothing a bs) = Switch Nothing (substSelf ev s a) (fmap (\(v, b) -> (v, substSelf ev s b)) bs)
 substSelf ev s (Eq a b) = Eq (substSelf ev s a) (substSelf ev s b)
 substSelf ev s (Union a b) = Union (substSelf ev s a) (substSelf ev s b)
 substSelf ev s (DynProj a b) = DynProj (substSelf ev s a) (substSelf ev s b)
@@ -565,10 +625,12 @@ desugar v@(View _) = return v
 desugar s@(Self _ _) = return s
 desugar t@(Table _ _) = return t
 desugar x@(Var Nothing _) = return x
+desugar (Tag t a) = Tag t <$> desugar a
 desugar (Proj l a) = Proj l <$> desugar a
 desugar (Lam Nothing v a) = Lam Nothing v <$> desugar a
-desugar (App a b) = App <$> desugar a <*> desugar b
 desugar (List Nothing as) = List Nothing <$> traverse desugar as
+desugar (App a b) = App <$> desugar a <*> desugar b
+desugar (Switch Nothing a bs) = Switch Nothing <$> desugar a <*> traverse (\(v, e) -> (v,) <$> desugar e) bs
 desugar otherwise = throwError $ "DESUGAR: " ++ show otherwise
 
 beta :: (MonadError String m, MonadState Int m) => Env -> Expr -> m Expr
@@ -656,13 +718,13 @@ beta env (Record es) =
   Record <$> traverse (beta env) es
 beta env (Tag t e) =
   Tag t <$> beta env e
-beta env s@(Switch e cs) = do
+beta env s@(Switch (Just t) e cs) = do
   e' <- beta env e
   case e' of
     Tag t v -> case Map.lookup t cs of
                  Just (var, c) -> beta (Map.insert var v env) c
                  Nothing -> throwError $ "No case for constructor " ++ show t
-    If c th el -> beta env (If c (Switch th cs) (Switch el cs))
+    If c th el -> beta env (If c (Switch Nothing th cs) (Switch Nothing el cs))
     _ -> throwError $ "error in switch: " ++ show e ++ " normalized to " ++ show e' ++ " in " ++ show s
 beta env (List t es) = do
   -- let xs = fmap (List . V.singleton) es
@@ -776,20 +838,25 @@ repl env pstate = do
       case runExcept $ flip runReaderT env $ evalStateT (desugar e) 10000 of
         Left err -> putStrLn ("DESUGAR error: " ++ show err)
         Right de -> do
-          -- printCode stdout de
-          -- putStrLn ""
-          putStrLn "desugared code omitted"
+          printCode stdout de
+          putStrLn ""
+          -- putStrLn "desugared code omitted"
           case runExcept $ runWriterT $ flip runReaderT mempty $ evalStateT (tc env de) 15000 of
-            Left err -> putStrLn ("TC error: " ++ show err)
+            Left err -> putStrLn $ show err
             Right (tt, cs) -> do
-              printType stdout (typeof tt)
-              putStrLn ""
-              putStrLn (show cs)                
-          case runExcept $ evalStateT (beta' env de) 20000 of
-            Left err -> putStrLn ("1st stage error: " ++ err)
-            Right e -> do
-              printCode stdout e
-              putStrLn ""
+              -- printType stdout (typeof tt)
+              -- putStrLn ""
+              case runExcept $ solve mempty (Set.toList cs) of
+                Left err -> putStrLn $ show err
+                Right s -> do
+                  let tt' = applySubst s tt
+                  printType stdout (typeof tt')
+                  putStrLn ""
+                  case runExcept $ evalStateT (beta' env tt') 20000 of
+                    Left err -> putStrLn ("1st stage error: " ++ err)
+                    Right e -> do
+                      printCode stdout e
+                      putStrLn ""
   repl env pstate
 
 

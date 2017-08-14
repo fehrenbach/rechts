@@ -191,7 +191,7 @@ switch = do
   try $ symbol "switch"
   e <- expr
   cases <- many case_
-  return (Switch e (Map.fromList cases))
+  return (Switch Nothing e (Map.fromList cases))
  where
    case_ = do
      symbol "case"
