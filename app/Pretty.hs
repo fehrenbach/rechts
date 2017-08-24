@@ -17,18 +17,21 @@ prettyVariable (GeneratedVar n) = "v_" <> pretty n
 label :: Text -> Doc
 label t = blue (pretty (unpack t))
 
+tag :: Text -> Doc
+tag t = green (pretty (unpack t))
+
 prettyType BoolT = "Bool"
 prettyType IntT = "Int"
 prettyType TextT = "Text"
 prettyType (VectorT t) = brackets (prettyType t)
-prettyType (RecordT r) = braces (vt (Map.toAscList r))
+prettyType (RecordT r) = braces (align (vt (Map.toAscList r)))
   where vt [] = empty
         vt [(k, t)] = label k <> ":" <+> group (prettyType t)
         vt ((k, t):tes) = label k <> ":" <+> group (prettyType t) <> "," <$> vt tes
-prettyType (VariantT r) = "[|" <+> vt (Map.toAscList r) <+> "|]"
+prettyType (VariantT r) = "[|" <+> align (vt (Map.toAscList r)) <+> "|]"
   where vt [] = empty
-        vt [(k, t)] = label k <> ":" <+> group (prettyType t)
-        vt ((k, t):tes) = label k <> ":" <+> group (prettyType t) <> "|" <$> vt tes
+        vt [(k, t)] = tag k <> ":" <+> group (prettyType t)
+        vt ((k, t):tes) = tag k <> ":" <+> group (prettyType t) <> "|" <$> vt tes
 prettyType otherwise = pretty (show otherwise)
 
 prettyCode :: Expr -> Doc
@@ -49,7 +52,7 @@ prettyCode (List _ es) =
     ke [] = empty
     ke [e] = group $ prettyCode e
     ke (e:es) = group (prettyCode e) <> "," <$> ke es
-prettyCode (Tag t e) = parens $ align $ green (pretty (unpack t)) </> prettyCode e
+prettyCode (Tag t e) = parens $ align $ tag t </> prettyCode e
 prettyCode (Switch _ e cs) = hang 2 $ magenta "switch" <+> prettyCode e <$> cases (Map.toAscList cs)
   where
     cases [] = empty
@@ -59,7 +62,7 @@ prettyCode (Switch _ e cs) = hang 2 $ magenta "switch" <+> prettyCode e <$> case
 prettyCode (App a b) =
   -- red "(" <> prettyCode a <+> red "$" <+> prettyCode b <> red ")"
   parens $ prettyCode a <+> prettyCode b
-prettyCode (Proj l e) =
+prettyCode (Proj _ l e) =
   prettyCode e <> magenta "." <> label l
 prettyCode (DynProj a b) =
   parens (prettyCode b) <> magenta "!" <> parens (prettyCode a)
@@ -83,7 +86,7 @@ prettyCode (Closure x env e) =
   hang 2 $ parens $ red "λ" <> prettyVariable x <> "." </> prettyCode e
 prettyCode (If c t e) =
   align $ magenta "if" <+> group (prettyCode c) <$> hang 2 (magenta "then" </> prettyCode t) <$> hang 2 (magenta "else" </> prettyCode e)
-prettyCode (RecordMap a x y b) =
+prettyCode (RecordMap _ a x y b) =
   magenta "rmap" <+> prettyCode a <+> magenta "with" <+> parens (prettyVariable x <+> "=" <+> prettyVariable y) <+> "=>" </> prettyCode b
 prettyCode (Undefined t) =
   magenta "undefined" <+> prettyCode (VText t)

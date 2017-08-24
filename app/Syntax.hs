@@ -20,9 +20,9 @@ data Type
   | VectorT Type
   | RecordT (Map.Map Text Type)
   | VariantT (Map.Map Text Type)
-  -- No. These should just be VariantT/RecordT over abstractions.
+  -- No. These should just be VariantT/RecordT over abstractions
   | SwitchT Type (Map.Map Text (Type, Type)) -- typevar -> type
-  | RecordMapT Type (Map.Map Text (Type, Type))
+  -- | RecordMapT Type
   | FunT Type Type
   | TyVar Int
   | AbsurdT
@@ -39,7 +39,7 @@ data Expr
   | And Expr Expr
   | App Expr Expr
   | Record (Map.Map Text Expr)
-  | Proj Text Expr
+  | Proj (Maybe Type) Text Expr
   | DynProj Expr Expr -- this is flipped for little good reason: a!b == DynProj b a
   | Tag Text Expr
   | Switch (Maybe Type) Expr (Map.Map Text (Variable, Expr))
@@ -50,7 +50,7 @@ data Expr
   | PrependPrefix Expr Expr
   | PrefixOf Expr Expr
   | StripPrefix Expr Expr
-  | RecordMap Expr Variable Variable Expr
+  | RecordMap (Maybe Type) Expr Variable Variable Expr
   | Table Text Type
   | Lookup (Maybe Expr) Expr
   | Indexed Expr -- indexed : [a] -> [{p : PrefixLabel, v : a}]
@@ -59,7 +59,7 @@ data Expr
   | Self Expr Expr
   | Trace Expr
   | Undefined Text
-  deriving (Show, Eq)
+  deriving (Show, Eq, Ord)
 
 data Stmt
   = Binding Variable Expr

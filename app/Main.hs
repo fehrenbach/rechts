@@ -18,6 +18,7 @@ import qualified Data.Vector as V
 import Text.Megaparsec (runParser, ParsecT(..), runParserT', State(..), runParserT, parseErrorPretty)
 import System.IO (hFlush, stdout)
 import System.IO.Unsafe (unsafePerformIO)
+import Control.Exception.Base (assert)
 import Control.Monad.State.Strict (evalStateT, runStateT, MonadState, get, put)
 import Control.Monad.Reader (MonadReader, runReaderT, local, asks)
 import Control.Monad.Except (MonadError, throwError, runExceptT, runExcept)
@@ -62,7 +63,7 @@ eval env (App f x) =
     (_, Left err) -> Left $ "error in function application (arg)" ++ err
 eval env (Record fields) =
   Record <$> traverse (eval env) fields
-eval env (Proj l r) =
+eval env (Proj Nothing l r) =
   case eval env r of
     Right (Record v) -> case Map.lookup l v of
       Nothing -> Left $ "Record " ++ show v ++ " does not have label " ++ unpack l
@@ -113,7 +114,7 @@ eval env (Trace e) = do
   e' <- evalStateT (trace e) 2000 -- TODO
   v <- eval env e' -- in what env?
   return v
-eval env (RecordMap r kv vv e) = do
+eval env (RecordMap Nothing r kv vv e) = do
   (Record r) <- eval env r
   r' <- Map.traverseWithKey (\l v -> eval (Map.insert kv (VText l) (Map.insert vv v env)) e) r
   return (Record r')
@@ -171,7 +172,7 @@ reflect (Lam Nothing v e) = Tag "Lam" (Record (Map.fromList [ ("var", reflectVar
                                                     , ("body", reflect e) ]))
 reflect (App f a) = Tag "App" (Record (Map.fromList [ ("f", reflect f), ("x", reflect a) ]))
 reflect (Record flds) = Tag "Record" (Record (Map.map reflect flds))
-reflect (Proj l e) = Tag "Proj" (Record (Map.fromList [ ("l", VText l)
+reflect (Proj Nothing l e) = Tag "Proj" (Record (Map.fromList [ ("l", VText l)
                                                       , ("r", reflect e) ])) -- call "w" for "consistency"?
 reflect (Tag t e) = Tag "Tag" (Record (Map.fromList [ ("t", VText t)
                                                     , ("v", reflect e) ]))
@@ -234,56 +235,56 @@ trace l@(Lam Nothing v e) = mtr "Lam" l (rec [ ("var", reflectVar v)
 trace (Eq l r) = do
   lt <- trace l
   rt <- trace r
-  mtr "Eq" (Eq l r) (rec [ ("left", Proj "t" lt), ("right", Proj "t" rt) ])
+  mtr "Eq" (Eq l r) (rec [ ("left", Proj Nothing "t" lt), ("right", Proj Nothing "t" rt) ])
 trace (And l r) = do
   lt <- trace l
   rt <- trace r
-  mtr "And" (And l r) (rec [ ("left", Proj "t" lt), ("right", Proj "t" rt) ])
+  mtr "And" (And l r) (rec [ ("left", Proj Nothing "t" lt), ("right", Proj Nothing "t" rt) ])
 trace (For x l b) = do
   tl <- trace l
   yv <- freshVar
   zv <- freshVar
   yt <- freshVar
   tb <- trace b
-  let v = For yv (Proj "v" tl)
-            (For zv (Proj "v" (App (Lam Nothing x tb) (Proj "v" (Var Nothing yv))))
-               (List Nothing (V.singleton (Record (Map.fromList [ ("p", PrependPrefix (Proj "p" (Var Nothing zv)) (Proj "p" (Var Nothing yv)))
-                                                        , ("v", Proj "v" (Var Nothing zv)) ])))))
+  let v = For yv (Proj Nothing "v" tl)
+            (For zv (Proj Nothing "v" (App (Lam Nothing x tb) (Proj Nothing "v" (Var Nothing yv))))
+               (List Nothing (V.singleton (Record (Map.fromList [ ("p", PrependPrefix (Proj Nothing "p" (Var Nothing zv)) (Proj Nothing "p" (Var Nothing yv)))
+                                                        , ("v", Proj Nothing "v" (Var Nothing zv)) ])))))
   mtr "For" v
      (rec [ ("in", tl)
           -- , ("body", reflect b) -- not needed ATM, make my life a bit easier
           , ("var", VText (pack (show x)))
-          , ("out", For yt (Proj "v" tl)
-                      (List Nothing (V.singleton (Record (Map.fromList [ ("p", Proj "p" (Var Nothing yt))
-                                                               , ("t", Proj "t" (App (Lam Nothing x tb) (Proj "v" (Var Nothing yt))))])))))
+          , ("out", For yt (Proj Nothing "v" tl)
+                      (List Nothing (V.singleton (Record (Map.fromList [ ("p", Proj Nothing "p" (Var Nothing yt))
+                                                               , ("t", Proj Nothing "t" (App (Lam Nothing x tb) (Proj Nothing "v" (Var Nothing yt))))])))))
           ])
 trace (Closure _ _ _) = undefined
 trace (App f x) = do
   ft <- trace f
   xt <- trace x
-  mtr "App" (App (Proj "v" ft) (Proj "v" xt)) (rec [("fun", ft), ("arg", xt)])
+  mtr "App" (App (Proj Nothing "v" ft) (Proj Nothing "v" xt)) (rec [("fun", ft), ("arg", xt)])
 trace (Record flds) = do
-  fldst <- Map.traverseWithKey (\l e -> Proj "t" <$> trace e) flds
-  fldsv <- Map.traverseWithKey (\l e -> Proj "v" <$> trace e) flds
+  fldst <- Map.traverseWithKey (\l e -> Proj Nothing "t" <$> trace e) flds
+  fldsv <- Map.traverseWithKey (\l e -> Proj Nothing "v" <$> trace e) flds
   mtr "Record" (Record fldsv) (Record fldst)
-trace (Proj l e) = do
+trace (Proj Nothing l e) = do
   te <- trace e
-  mtr "Proj" (Proj l (Proj "v" te)) (rec [ ("lab", VText l),
+  mtr "Proj" (Proj Nothing l (Proj Nothing "v" te)) (rec [ ("lab", VText l),
                                            ("rec", te),
-                                           ("res", Proj l (Proj "t" te)) ])
+                                           ("res", Proj Nothing l (Proj Nothing "t" te)) ])
 trace (If c t e) = do
   ct <- trace c
   tt <- trace t
   et <- trace e
   mtr "If"
-    (If c (Proj "v" tt)
-          (Proj "v" et))
-    (rec [ -- ("condition", Proj "t" ct) -- not needed ATM, so remove to make my life easier
-          ("branch", Proj "t" (If c tt et)) ])
+    (If c (Proj Nothing "v" tt)
+          (Proj Nothing "v" et))
+    (rec [ -- ("condition", Proj Nothing "t" ct) -- not needed ATM, so remove to make my life easier
+          ("branch", Proj Nothing "t" (If c tt et)) ])
 trace (List Nothing es) = do
   tes <- traverse trace es
-  let labelledValues = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("v", (Proj "v" e))])) tes
-  let labelledTraces = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("t", (Proj "t" e))])) tes
+  let labelledValues = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("v", (Proj Nothing "v" e))])) tes
+  let labelledTraces = V.imap (\i e -> Record (Map.fromList [("p", VText (pack (show i))), ("t", (Proj Nothing "t" e))])) tes
   let plain = V.map id tes
   mtr "List" (List Nothing labelledValues) (List Nothing labelledTraces)
 trace (Union l r) = do
@@ -293,13 +294,13 @@ trace (Union l r) = do
   rv <- freshVar
   mtr "Union"
     (Union
-      (For lv (Proj "v" lt)
-        (List Nothing (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "l") (Proj "p" (Var Nothing lv))),
-                                                  ("v", Proj "v" (Var Nothing lv))])))))
-      (For rv (Proj "v" rt)
-        (List Nothing (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "r") (Proj "p" (Var Nothing rv))),
-                                                  ("v", Proj "v" (Var Nothing rv))]))))))
-    (rec [("left", Proj "t" lt), ("right", Proj "t" rt)])
+      (For lv (Proj Nothing "v" lt)
+        (List Nothing (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "l") (Proj Nothing "p" (Var Nothing lv))),
+                                                  ("v", Proj Nothing "v" (Var Nothing lv))])))))
+      (For rv (Proj Nothing "v" rt)
+        (List Nothing (V.singleton (Record (Map.fromList [("p", PrependPrefix (VText "r") (Proj Nothing "p" (Var Nothing rv))),
+                                                  ("v", Proj Nothing "v" (Var Nothing rv))]))))))
+    (rec [("left", Proj Nothing "t" lt), ("right", Proj Nothing "t" rt)])
 trace tbl@(Table n _) = do
   let v = Indexed tbl
   mtr "Table" v (Record (Map.fromList [ ("name", VText n)
@@ -308,7 +309,7 @@ trace (Trace e) = trace e
 trace (PrependPrefix _ _) = undefined
 trace (PrefixOf _ _) = undefined
 trace (StripPrefix _ _) = undefined
-trace (RecordMap _ _ _ _) = undefined
+trace (RecordMap Nothing _ _ _ _) = undefined
 trace (DynProj _ _) = undefined
 trace (Tag _ _) = undefined
 trace (Switch Nothing _ _) = undefined
@@ -355,16 +356,16 @@ subst x y (Switch Nothing a cs) =
 subst x y (For z a b)
   | x == z = For z (subst x y a) b
   | otherwise = For z (subst x y a) (subst x y b)
-subst x y (RecordMap arg kv vv e)
-  | kv == x = RecordMap (subst x y arg) kv vv e
-  | vv == x = RecordMap (subst x y arg) kv vv e
-  | otherwise = RecordMap (subst x y arg) kv vv (subst x y e)
+subst x y (RecordMap Nothing arg kv vv e)
+  | kv == x = RecordMap Nothing (subst x y arg) kv vv e
+  | vv == x = RecordMap Nothing (subst x y arg) kv vv e
+  | otherwise = RecordMap Nothing (subst x y arg) kv vv (subst x y e)
 subst x y (Lookup Nothing a) =
   Lookup Nothing (subst x y a)
 subst x y (Indexed a) =
   Indexed (subst x y a)
-subst x y (Proj l a) =
-  Proj l (subst x y a)
+subst x y (Proj Nothing l a) =
+  Proj Nothing l (subst x y a)
 subst x y (If a b c) =
   If (subst x y a) (subst x y b) (subst x y c)
 subst x y (Eq a b) =
@@ -395,16 +396,16 @@ freshen (Switch Nothing x ys) = do
   x' <- freshen x
   ys' <- traverse (\(v, y) -> (v,) <$> freshen y) ys
   return (Switch Nothing x' ys')
-freshen (RecordMap x kv vv y) = do
+freshen (RecordMap Nothing x kv vv y) = do
   x' <- freshen x
   kv' <- freshVar
   vv' <- freshVar
   y' <- freshen (subst vv vv' (subst kv kv' y))
-  return (RecordMap x' kv' vv' y')
+  return (RecordMap Nothing x' kv' vv' y')
 freshen (Var Nothing x) = return (Var Nothing x)
 freshen (Lookup Nothing x) = Lookup Nothing <$> freshen x
 freshen (Indexed x) = Indexed <$> freshen x
-freshen (Proj l x) = Proj l <$> freshen x
+freshen (Proj Nothing l x) = Proj Nothing l <$> freshen x
 freshen (If a b c) = If <$> freshen a <*> freshen b <*> freshen c
 freshen (Eq a b) = Eq <$> freshen a <*> freshen b
 freshen (Union a b) = Union <$> freshen a <*> freshen b
@@ -416,6 +417,7 @@ freshen otherwise = error $ show otherwise
 
 elementType :: Type -> Type
 elementType (VectorT et) = et
+elementType err = error (show err)
 
 -- Ugh, I think this idea to avoid putting types into the Expr datatype was a bad one
 typeof :: Expr -> Type
@@ -425,9 +427,7 @@ typeof (VText _) = TextT
 typeof (For _ _ body) = typeof body
 typeof (Table n t) = VectorT t
 typeof (Record r) = RecordT (fmap typeof r)
-typeof (Proj l e) = case typeof e of
-  RecordT r -> case Map.lookup l r of
-    Just t -> t
+typeof (Proj (Just t) l e) = t
 typeof (Tag l e) = VariantT (Map.singleton l (typeof e))
 typeof (App f x) = case typeof f of
   FunT argt bodyt -> bodyt  -- uh, need to subst arg type / polymorphism?
@@ -435,12 +435,17 @@ typeof (Lam (Just t) _ _) = t
 typeof (Var (Just t) _) = t
 typeof (List (Just t) _) = VectorT t
 typeof (Switch (Just t) _ _) = t
+typeof (Indexed e) = VectorT (RecordT (Map.fromList [ ("p", TextT)
+                                                    , ("v", elementType (typeof e)) ]))
+typeof (If a b c) = typeof b -- This is not quite true, because type variables might not have been instantiated yet: assert (typeof b == typeof c) (typeof b)
+typeof (Eq _ _) = BoolT
+typeof (And _ _) = BoolT
 typeof otherwise = error (show otherwise)
 
 data Constraint
   = EqC Type Type
   | VariantLabelHasType Type Text Type
-  | RecordLabelHasType  Type Text Type
+  | RecordLabelHasType  Expr Type Text Type
  deriving (Eq, Ord, Show)
 
 uniEq x y =
@@ -449,8 +454,8 @@ uniEq x y =
 uniVariantLabelHasType v l t =
   tell (Set.singleton (VariantLabelHasType v l t))
 
-uniRecordLabelHasType r l t =
-  tell (Set.singleton (RecordLabelHasType r l t))
+uniRecordLabelHasType e r l t =
+  tell (Set.singleton (RecordLabelHasType e r l t))
 
 
 tc :: (MonadReader (Map.Map Variable Type) m,
@@ -474,20 +479,29 @@ tc env (App f x) = do
   return (App f x)
 tc env (For x a b) = do
   a' <- tc env a
-  let xt = elementType (typeof a')
+  xt <- freshTVar
+  uniEq (typeof a') (VectorT xt)
+  -- let xt = elementType (typeof a')
   b' <- local (Map.insert x xt) (tc env b)
   return (For x a' b')
-tc env (Proj l a) = do
+tc env e@(Proj Nothing l a) = do
   a <- tc env a
   res <- freshTVar
-  uniRecordLabelHasType (typeof a) l res
-  return (Proj l a)
+  uniRecordLabelHasType (Proj Nothing l a) (typeof a) l res
+  return (Proj (Just res) l a)
 tc env (Record a) = do
   Record <$> traverse (tc env) a
-tc env (RecordMap a kv vv b) = do
-  a <- tc env a
-  res <- freshTVar
+-- tc env (RecordMap Nothing a kv vv b) = do
+--   a <- tc env a
+--   res <- freshTVar
+--   vt <- freshTVar
+--   -- uhm.. don't i need fresh type variables for every label in the
+--   -- record? I think I should be using an existential quantifier. That
+--   -- is, there can be a fresh type in every branch when we finally
+--   -- unroll it, it just has to be consistent. Right? Not sure.
+--   b <- local (\m -> Map.insert kv TextT (Map.insert vv vt m)) (tc env b)
   
+--   return $ RecordMap (Just (RecordMapT res)) a kv vv b
 tc env (Trace a) = do
   ta <- trace a
   tc env ta
@@ -530,6 +544,31 @@ tc env (Switch Nothing a bs) = do
                                 return $ ((t, typeof b), (v, b))) bs
   uniEq res (SwitchT (typeof a) (fmap fst bs))
   return $ Switch (Just res) a (fmap snd bs)
+tc env (If c t e) = do
+  c <- tc env c
+  uniEq (typeof c) BoolT
+  t <- tc env t
+  e <- tc env e
+  uniEq (typeof t) (typeof e)
+  return $ If c t e
+tc env (And l r) = do
+  l <- tc env l
+  r <- tc env r
+  uniEq (typeof l) BoolT
+  uniEq (typeof r) BoolT
+  return $ And l r
+tc env (Eq l r) = do
+  l <- tc env l
+  r <- tc env r
+  uniEq (typeof l) (typeof r)
+  return $ Eq l r
+tc env (PrependPrefix l r) = do
+  l <- tc env l
+  r <- tc env r
+  uniEq (typeof l) TextT
+  uniEq (typeof r) TextT
+  return $ PrependPrefix l r
+  
 tc _ otherwise = throwError $ "no tc case for: " ++ show otherwise
 
 substT s (TyVar z) = case Map.lookup z s of
@@ -553,16 +592,23 @@ substT s (SwitchT a b) = case substT s a of
 
 substC s (EqC a b) = EqC (substT s a) (substT s b)
 substC s (VariantLabelHasType v l t) = VariantLabelHasType (substT s v) l (substT s t)
+substC s (RecordLabelHasType x r l t) = RecordLabelHasType x (substT s r) l (substT s t)
 
 applySubst s x@(VInt _) = x
 applySubst s x@(VBool _) = x
 applySubst s x@(VText _) = x
+applySubst s x@(Table _ _) = x
+applySubst s (Indexed a) = Indexed (applySubst s a)
 applySubst s (App a b) = App (applySubst s a) (applySubst s b)
+applySubst s (PrependPrefix a b) = PrependPrefix (applySubst s a) (applySubst s b)
+applySubst s (For v a b) = For v (applySubst s a) (applySubst s b)
 applySubst s (Lam (Just t) v a) = Lam (Just (substT s t)) v (applySubst s a)
 applySubst s (Tag t a) = Tag t (applySubst s a)
+applySubst s (Proj (Just t) l a) = Proj (Just (substT s t)) l (applySubst s a)
 applySubst s (Var (Just t) x) = Var (Just (substT s t)) x
 applySubst s (Switch (Just t) a bs) = Switch (Just (substT s t)) (applySubst s a) (fmap (\(v, b) -> (v, applySubst s b)) bs)
 applySubst s (List (Just t) a) = List (Just (substT s t)) (fmap (applySubst s) a)
+applySubst s (Record a) = Record (fmap (applySubst s) a)
 applySubst s otherwise = error $ "APPLYSUBST " ++ show otherwise
 
 solve :: (MonadError String m) => Map.Map Int Type -> [Constraint] -> m (Map.Map Int Type)
@@ -575,6 +621,15 @@ solve s (c : cs) = case c of
     let s' = Map.insert v t (fmap (substT (Map.singleton v t)) s)
     in solve s' (fmap (substC s') cs)
   EqC (FunT a b) (FunT c d) -> solve s ([EqC a c, EqC b d] ++ cs)
+  EqC (VectorT a) (VectorT b) -> solve s ([EqC a b] ++ cs)
+  EqC (RecordT a) (RecordT b) -> if (Map.keys a == Map.keys b)
+    then solve s (zipWith (\(_, l) (_, r) -> EqC l r) (Map.toList a) (Map.toList b) ++ cs)
+    else throwError "records have different keys"
+  EqC (VariantT a) (VariantT b) -> if (Map.keys a == Map.keys b)
+    then solve s (zipWith (\(_, l) (_, r) -> EqC l r) (Map.toList a) (Map.toList b) ++ cs)
+    else throwError "variants have different keys"
+  EqC TextT TextT -> solve s cs
+  EqC BoolT BoolT -> solve s cs
   VariantLabelHasType (VariantT variant) l (TyVar v)
     | Map.size variant == 1 ->
       case Map.lookup l variant of
@@ -585,13 +640,26 @@ solve s (c : cs) = case c of
           let t = AbsurdT 
               s' = Map.insert v t (fmap (substT (Map.singleton v t)) s)
           in solve s' (fmap (substC s') cs)
+  RecordLabelHasType _ (RecordT r) l (TyVar v) ->
+    case Map.lookup l r of
+      Just t ->
+        let s' = Map.insert v t (fmap (substT (Map.singleton v t)) s)
+        in solve s' (fmap (substC s') cs)
+  RecordLabelHasType _ (RecordT r) l t' ->
+    case Map.lookup l r of
+      Just t -> solve s ((EqC t t'):cs)
+  r@(RecordLabelHasType (Proj _ _ _) (TyVar _) l _) ->
+    -- We don't have enough information to do anything with this at
+    -- the moment, without introducing row types. Just defer for
+    -- now. TODO this is not safe, might loop forever...
+    solve s (cs ++ [r])
   otherwise -> throwError $ "todo solve " ++ show otherwise
 
 substSelf ev s (Self newVars arg) = App (App s (Union newVars (Var Nothing ev))) arg
 substSelf ev s x@(Var Nothing _) = x
 substSelf ev s (Lookup Nothing a) = Lookup (Just (Var Nothing ev)) (substSelf ev s a)
 substSelf ev s (Lam Nothing x a) = Lam Nothing x (substSelf ev s a)
-substSelf ev s (Proj x a) = Proj x (substSelf ev s a)
+substSelf ev s (Proj Nothing x a) = Proj Nothing x (substSelf ev s a)
 substSelf ev s (List Nothing as) = List Nothing (fmap (substSelf ev s) as)
 substSelf ev s (Record as) = Record (fmap (substSelf ev s) as)
 substSelf ev s (Switch Nothing a bs) = Switch Nothing (substSelf ev s a) (fmap (\(v, b) -> (v, substSelf ev s b)) bs)
@@ -599,7 +667,7 @@ substSelf ev s (Eq a b) = Eq (substSelf ev s a) (substSelf ev s b)
 substSelf ev s (Union a b) = Union (substSelf ev s a) (substSelf ev s b)
 substSelf ev s (DynProj a b) = DynProj (substSelf ev s a) (substSelf ev s b)
 substSelf ev s (For v a b) = For v (substSelf ev s a) (substSelf ev s b)
-substSelf ev s (RecordMap a x y b) = RecordMap (substSelf ev s a) x y (substSelf ev s b)
+substSelf ev s (RecordMap Nothing a x y b) = RecordMap Nothing (substSelf ev s a) x y (substSelf ev s b)
 substSelf ev s (If a b c) = If (substSelf ev s a) (substSelf ev s b) (substSelf ev s c)
 substSelf ev s otherwise = error $ "SUBSTSELF " ++  (show otherwise)
 
@@ -625,12 +693,14 @@ desugar v@(View _) = return v
 desugar s@(Self _ _) = return s
 desugar t@(Table _ _) = return t
 desugar x@(Var Nothing _) = return x
+desugar (Indexed a) = Indexed <$> desugar a
 desugar (Tag t a) = Tag t <$> desugar a
-desugar (Proj l a) = Proj l <$> desugar a
+desugar (Proj Nothing l a) = Proj Nothing l <$> desugar a
 desugar (Lam Nothing v a) = Lam Nothing v <$> desugar a
 desugar (List Nothing as) = List Nothing <$> traverse desugar as
 desugar (App a b) = App <$> desugar a <*> desugar b
 desugar (Switch Nothing a bs) = Switch Nothing <$> desugar a <*> traverse (\(v, e) -> (v,) <$> desugar e) bs
+desugar (Record as) = Record <$> traverse desugar as
 desugar otherwise = throwError $ "DESUGAR: " ++ show otherwise
 
 beta :: (MonadError String m, MonadState Int m) => Env -> Expr -> m Expr
@@ -658,14 +728,14 @@ beta env (App f arg) = do
     -- Lam v body -> beta (Map.insert v arg env) body -- can this even happen?
     Closure v cenv body -> beta (Map.insert v arg cenv) body -- not sure about this
     _ -> throwError $ "not a function " ++ show f
-beta env (Proj l e) = do
+beta env (Proj (Just t) l e) = do
   e <- beta env e
   case e of
     Record flds -> case Map.lookup l flds of
       Just e -> beta env e
       Nothing -> throwError "label not found"
-    If a b c -> beta env (If a (Proj l b) (Proj l c))
-    e -> return $ Proj l e
+    If a b c -> beta env (If a (Proj (Just t) l b) (Proj (Just t) l c))
+    e -> return $ Proj (Just t) l e
 beta env (If a b c) = do
   a' <- beta env a
   b' <- beta env b
@@ -769,7 +839,7 @@ beta env (DynProj l r) = do
     -- We might need to do something fancy here, if the argument does
     -- not happen to normalize to a record immediately.
     _ -> throwError $ "Not a record in dyn projection: " ++ show r
-beta env rm@(RecordMap r kv vv e) = do
+beta env rm@(RecordMap Nothing r kv vv e) = do
   r' <- beta env r
   case r' of
     Record els -> do

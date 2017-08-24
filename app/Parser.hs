@@ -155,7 +155,7 @@ expr = makeExprParser term table
   where
     table = [ [ Postfix (do symbol "."
                             l <- identifier
-                            return (Proj l)) ]
+                            return (Proj Nothing l)) ]
             , [ InfixL (flip DynProj <$ symbol "!") ]
             , [ InfixL (App <$ return ()) ]
             , [ InfixN (Eq <$ symbol "==") ]
@@ -239,7 +239,7 @@ rmap = do
   symbol ")"
   symbol "=>"
   e <- expr
-  return (RecordMap r k v e)
+  return (RecordMap Nothing r k v e)
 
 binding :: Parser Stmt
 binding = do
