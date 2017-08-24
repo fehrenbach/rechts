@@ -256,7 +256,7 @@ trace (For x l b) = do
           , ("var", VText (pack (show x)))
           , ("out", For yt (Proj Nothing "v" tl)
                       (List Nothing (V.singleton (Record (Map.fromList [ ("p", Proj Nothing "p" (Var Nothing yt))
-                                                               , ("t", Proj Nothing "t" (App (Lam Nothing x tb) (Proj Nothing "v" (Var Nothing yt))))])))))
+                                                                       , ("t", Proj Nothing "t" (App (Lam Nothing x tb) (Proj Nothing "v" (Var Nothing yt))))])))))
           ])
 trace (Closure _ _ _) = undefined
 trace (App f x) = do
@@ -269,9 +269,11 @@ trace (Record flds) = do
   mtr "Record" (Record fldsv) (Record fldst)
 trace (Proj Nothing l e) = do
   te <- trace e
-  mtr "Proj" (Proj Nothing l (Proj Nothing "v" te)) (rec [ ("lab", VText l),
-                                           ("rec", te),
-                                           ("res", Proj Nothing l (Proj Nothing "t" te)) ])
+  mtr "Proj"
+      (Proj Nothing l (Proj Nothing "v" te))
+      (rec [ ("lab", VText l),
+             ("rec", te),
+             ("res", Proj Nothing l (Proj Nothing "v" te)) ])
 trace (If c t e) = do
   ct <- trace c
   tt <- trace t
@@ -440,6 +442,7 @@ typeof (Indexed e) = VectorT (RecordT (Map.fromList [ ("p", TextT)
 typeof (If a b c) = typeof b -- This is not quite true, because type variables might not have been instantiated yet: assert (typeof b == typeof c) (typeof b)
 typeof (Eq _ _) = BoolT
 typeof (And _ _) = BoolT
+typeof (PrependPrefix _ _) = TextT
 typeof otherwise = error (show otherwise)
 
 data Constraint
@@ -600,6 +603,8 @@ applySubst s x@(VText _) = x
 applySubst s x@(Table _ _) = x
 applySubst s (Indexed a) = Indexed (applySubst s a)
 applySubst s (App a b) = App (applySubst s a) (applySubst s b)
+applySubst s (And a b) = And (applySubst s a) (applySubst s b)
+applySubst s (Eq a b) = Eq (applySubst s a) (applySubst s b)
 applySubst s (PrependPrefix a b) = PrependPrefix (applySubst s a) (applySubst s b)
 applySubst s (For v a b) = For v (applySubst s a) (applySubst s b)
 applySubst s (Lam (Just t) v a) = Lam (Just (substT s t)) v (applySubst s a)
@@ -609,6 +614,7 @@ applySubst s (Var (Just t) x) = Var (Just (substT s t)) x
 applySubst s (Switch (Just t) a bs) = Switch (Just (substT s t)) (applySubst s a) (fmap (\(v, b) -> (v, applySubst s b)) bs)
 applySubst s (List (Just t) a) = List (Just (substT s t)) (fmap (applySubst s) a)
 applySubst s (Record a) = Record (fmap (applySubst s) a)
+applySubst s (If a b c) = If (applySubst s a) (applySubst s b) (applySubst s c)
 applySubst s otherwise = error $ "APPLYSUBST " ++ show otherwise
 
 solve :: (MonadError String m) => Map.Map Int Type -> [Constraint] -> m (Map.Map Int Type)
