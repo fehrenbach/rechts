@@ -39,7 +39,7 @@ prettyCode (VBool b) = pretty b
 prettyCode (VInt i) = pretty i
 prettyCode (VText t) = "\"" <> pretty (unpack t) <> "\""
 prettyCode (Var Nothing v) = prettyVariable v
-prettyCode (Var (Just t) v) = prettyVariable v <> ":" <+> prettyType t
+prettyCode (Var (Just t) v) = prettyVariable v -- <> ":" <+> prettyType t
 prettyCode (Record es) =
   braces (align (ke (Map.toAscList es)))
   where

@@ -714,14 +714,73 @@ sp v (Switch Nothing x cs) (VariantT vs) = do
 --                                   return (var, body'))
 --           cs'
 --   return (Switch Nothing x cs'')
+sp v tenv (Record a) UnknownT =
+  Record <$> traverse (\x -> sp v tenv x UnknownT) a
+sp v tenv (List Nothing a) t = do
+  -- nope, that's wrong.
+  List (Just t) <$> traverse (\x -> sp v tenv x UnknownT) a
+sp v tenv (Union a b) t = do
+  Union <$> sp v tenv a t <*> sp v tenv b t
+sp v tenv (App f x) t = do
+  f <- sp v tenv f (FunT UnknownT t)
+  x <- sp v tenv x UnknownT
+  return $ App f x
+sp (view, envvar) tenv (Self bindings arg) t = do
+  -- envvar' <- freshVar
+  -- throwError $ "wtf is going on?" ++ show view
+  sp (view, envvar) tenv (App (App view (Union bindings (Var Nothing envvar))) arg) (FunT UnknownT (FunT t UnknownT))
+sp v tenv (List Nothing a) (VectorT t) =
+  -- yeah.. this is definitely a unification problem
+  List (Just t) <$> traverse (\x -> sp v tenv x t) a
+sp v tenv (Eq a b) BoolT =
+  -- yeah.. this is definitely a unification problem
+  Eq <$> sp v tenv a UnknownT <*> sp v tenv b UnknownT
+sp v tenv (If a b c) t =
+  If <$> sp v tenv a BoolT <*> sp v tenv b t <*> sp v tenv c t
+sp v tenv (Proj Nothing l x) t = do
+  x <- sp v tenv x UnknownT -- really? Shouldn't it be {l :: UnknownT | _} 
+  case typeof x of
+    UnknownT -> return (Proj (Just t) l x)
+    RecordT r -> case Map.lookup l r of
+      Just t2 -> return (Proj (Just (mj t t2)) l x)
+sp v tenv (For var i o) t = do
+  i <- sp v tenv i UnknownT
+  case typeof i of
+    VectorT elt -> For var i <$> sp v (Map.insert var elt tenv) o (VectorT t)
+sp v tenv (Var mt1 var) t3 =
+  -- we have three sources of type information we need to potentially combine
+  -- this is a mess
+  case (mt1, Map.lookup var tenv) of
+    (Just t1, Just t2) -> return $ Var (Just (mj (mj t1 t2) t3)) var
+    (Nothing, Just t2) -> return $ Var (Just (mj t2 t3)) var
+    (Nothing, Nothing) -> return $ Var (Just t3) var
+sp v tenv (Switch Nothing x cs) t = do
+  x <- sp v tenv x UnknownT
+  case typeof x of
+    VariantT vs -> do
+      let cs' = Map.filterWithKey (\variant _ -> Map.member variant vs) cs
+      cs'' <- Map.traverseWithKey (\variant (var, e) -> do
+                                      let (Just ty) = Map.lookup variant vs
+                                      -- No, v has type ty
+                                      body' <- sp v (Map.insert var ty tenv) e t
+                                      return (var, body')) cs'
+      -- TODO I might need to combine the types of the bodies with the "pushed" type t (= UnknownT)
+      return (Switch Nothing x cs'')
+    UnknownT ->
+      return (Switch (Just t) x cs)
 sp v tenv (Lam Nothing var body) (FunT a b) =
   -- Yeah, this is more like it. But my environment and state handling is a mess.
-  Lam Nothing var <$> sp v (Map.insert var a tenv) body b
-sp v tenv fun ty = unsafeLogCode fun $
-  throwError $ "SPECIALIZE: " ++ {- show fun ++ -} "   ::   " ++ show ty ++ "   in context   " ++ show tenv
+  Lam (Just (FunT a b)) var <$> sp v (Map.insert var a tenv) body b
+sp v tenv fun ty = -- unsafeLogCode fun $
+  throwError $ "SPECIALIZE: " ++ show fun ++ "   ::   " ++ show ty ++ "   in context   " ++ show tenv
+
+-- meet or join or whatever -- combine partial type information as much as possible
+mj :: Type -> Type -> Type
+mj UnknownT t = t
+mj t UnknownT = t
 
 -- specialize :: Expr -> Type -> m Expr
-specialize fun ty = sp fun mempty fun ty
+specialize envvar fun ty = sp (fun, envvar) mempty fun ty
 
 -- get rid of all tracing related stuff
 desugar (Untrace (Var Nothing v) a) = do
@@ -735,7 +794,7 @@ desugar (Untrace (Var Nothing v) a) = do
   fv <- freshVar
   case v' of
     Just (View v'') -> do
-      f <- specialize (Lam Nothing fv v'') (FunT UnknownT (FunT ta UnknownT))
+      f <- specialize fv (Lam Nothing fv v'') (FunT UnknownT (FunT ta UnknownT))
       -- let steps = 10
       -- vars <- replicateM steps freshVar
       return (App (App f (List Nothing mempty)) a''')
@@ -968,22 +1027,22 @@ repl env pstate = do
           printCode stdout de
           putStrLn ""
           -- putStrLn "desugared code omitted"
-          case runExcept $ runWriterT $ flip runReaderT mempty $ evalStateT (tc env de) 15000 of
-            Left err -> putStrLn $ show err
-            Right (tt, cs) -> do
-              -- printType stdout (typeof tt)
-              -- putStrLn ""
-              case runExcept $ solve mempty (Set.toList cs) of
-                Left err -> putStrLn $ show err
-                Right s -> do
-                  let tt' = applySubst s tt
-                  printType stdout (typeof tt')
-                  putStrLn ""
-                  case runExcept $ evalStateT (beta' env tt') 20000 of
-                    Left err -> putStrLn ("1st stage error: " ++ err)
-                    Right e -> do
-                      printCode stdout e
-                      putStrLn ""
+          -- case runExcept $ runWriterT $ flip runReaderT mempty $ evalStateT (tc env de) 15000 of
+          --   Left err -> putStrLn $ show err
+          --   Right (tt, cs) -> do
+          --     -- printType stdout (typeof tt)
+          --     -- putStrLn ""
+          --     case runExcept $ solve mempty (Set.toList cs) of
+          --       Left err -> putStrLn $ show err
+          --       Right s -> do
+          --         let tt' = applySubst s tt
+          --         printType stdout (typeof tt')
+          --         putStrLn ""
+          --         case runExcept $ evalStateT (beta' env tt') 20000 of
+          --           Left err -> putStrLn ("1st stage error: " ++ err)
+          --           Right e -> do
+          --             printCode stdout e
+          --             putStrLn ""
   repl env pstate
 
 
