@@ -487,6 +487,7 @@ tc env (For x a b) = do
   -- let xt = elementType (typeof a')
   b' <- local (Map.insert x xt) (tc env b)
   return (For x a' b')
+tc env e@(Proj (Just _) _ _) = return e -- already have a type
 tc env e@(Proj Nothing l a) = do
   a <- tc env a
   res <- freshTVar
@@ -513,7 +514,6 @@ tc env (Table n t) = do
   return (Table n t)
 tc env (Tag l a) =
   Tag l <$> tc env a
-tc env (VText t) = return (VText t)
 tc env (Indexed a) = do
   a' <- tc env a
   case typeof a' of
@@ -580,7 +580,7 @@ substT s (TyVar z) = case Map.lookup z s of
 substT s BoolT = BoolT
 substT s IntT = IntT
 substT s TextT = TextT
-substT s AbsurdT = AbsurdT
+substT s UnknownT = UnknownT
 substT s (FunT a b) = FunT (substT s a) (substT s b)
 substT s (VectorT a) = VectorT (substT s a)
 substT s (RecordT a) = RecordT (fmap (substT s) a)
@@ -642,10 +642,11 @@ solve s (c : cs) = case c of
         Just t ->
           let s' = Map.insert v t (fmap (substT (Map.singleton v t)) s)
           in solve s' (fmap (substC s') cs)
-        Nothing ->
-          let t = AbsurdT 
-              s' = Map.insert v t (fmap (substT (Map.singleton v t)) s)
-          in solve s' (fmap (substC s') cs)
+        Nothing -> throwError "not a label in variant type or something"
+        -- Nothing ->
+          -- let t = AbsurdT 
+              -- s' = Map.insert v t (fmap (substT (Map.singleton v t)) s)
+          -- in solve s' (fmap (substC s') cs)
   RecordLabelHasType _ (RecordT r) l (TyVar v) ->
     case Map.lookup l r of
       Just t ->
@@ -680,15 +681,65 @@ substSelf ev s otherwise = error $ "SUBSTSELF " ++  (show otherwise)
 unroll 0 ev view = Undefined "did not unroll often enough"
 unroll n (ev:rest) view = Lam Nothing ev (substSelf ev (unroll (n-1) rest view) view) -- substSelf ev (Lam Nothing ev (unroll (n-1) ev view)) view
 
+-- sp :: Expr -> Expr -> Type -> m Expr
+-- sp v (Self bindings arg) ty =
+--   App <$> sp v v ty <*> pure arg
+-- sp v (For var gen body) ty =
+--   For var gen <$> sp v body ty
+-- sp v (Var Nothing var) ty = return (Var Nothing var) 
+-- sp v (Proj Nothing l e) ty =
+--   Proj Nothing l <$> sp v e (RecordT (Map.singleton l ty))
+{-
+sp v (Switch Nothing x cs) (VariantT vs) = do
+  -- what to do about x? don't we need to specialize that too? But we don't have the type...
+  -- can we reverse-engineer the type somehow?
+  let cs' = Map.filterWithKey (\variant _ -> Map.member variant vs) cs
+  cs'' <- Map.traverseWithKey (\variant (var, e) -> do
+                                  let (Just ty) = Map.lookup variant vs
+                                  -- What about the type of variable bound in the case?
+                                  -- Actually, do we even know that? Do we need to?
+                                  body' <- sp v e ty
+                                  return (var, body'))
+          cs'
+  return (Switch Nothing x cs'')
+-}
+-- sp v tenv (Switch Nothing x cs) (VariantT vs) = do
+--   let cs' = Map.filterWithKey (\variant _ -> Map.member variant vs) cs
+--   cs'' <- Map.traverseWithKey (\variant (var, e) -> do
+--                                   let (Just ty) = Map.lookup variant vs
+--                                   -- What about the type of variable bound in the case?
+--                                   -- Actually, do we even know that? Do we need to?
+--                                   -- No, v has type ty
+--                                   body' <- sp v e UnknownT 
+--                                   return (var, body'))
+--           cs'
+--   return (Switch Nothing x cs'')
+sp v tenv (Lam Nothing var body) (FunT a b) =
+  -- Yeah, this is more like it. But my environment and state handling is a mess.
+  Lam Nothing var <$> sp v (Map.insert var a tenv) body b
+sp v tenv fun ty = unsafeLogCode fun $
+  throwError $ "SPECIALIZE: " ++ {- show fun ++ -} "   ::   " ++ show ty ++ "   in context   " ++ show tenv
+
+-- specialize :: Expr -> Type -> m Expr
+specialize fun ty = sp fun mempty fun ty
+
 -- get rid of all tracing related stuff
 desugar (Untrace (Var Nothing v) a) = do
   a' <- desugar a
+  env <- asks id
+  (a'', cs) <- runWriterT $ flip runReaderT mempty (tc env a')
+  subst <- solve mempty (Set.toList cs)
+  let a''' = applySubst subst a''
+  let ta = typeof a'''
   v' <- asks (Map.lookup v)
+  fv <- freshVar
   case v' of
     Just (View v'') -> do
-      let steps = 10
-      vars <- replicateM steps freshVar
-      return (App (App (unroll steps vars v'') (List Nothing mempty)) a')
+      f <- specialize (Lam Nothing fv v'') (FunT UnknownT (FunT ta UnknownT))
+      -- let steps = 10
+      -- vars <- replicateM steps freshVar
+      return (App (App f (List Nothing mempty)) a''')
+      -- return (App (App (unroll steps vars v'') (List Nothing mempty)) a')
     _ -> throwError $ "Variable " ++ show v ++ " did not evaluate to a VIEW"
 desugar (Untrace notavar _) = throwError $ "For now, the first argument to UNTRACE has to be a variable referring to a VIEW, but is: " ++ show notavar
 desugar (Trace a) = trace a

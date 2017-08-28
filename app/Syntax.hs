@@ -25,7 +25,7 @@ data Type
   -- | RecordMapT Type
   | FunT Type Type
   | TyVar Int
-  | AbsurdT
+  | UnknownT
   deriving (Show, Eq, Ord)
 
 data Expr
