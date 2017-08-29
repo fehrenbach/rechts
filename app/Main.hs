@@ -761,6 +761,16 @@ sp v tenv (Lam Nothing var body) (FunT a b) = do
   return $ Lam (Just (FunT a (typeof body))) var body
 sp v@(_, envvar) tenv (Lookup Nothing x) t =
   Lookup (Just (Var Nothing envvar)) <$> sp v tenv x TextT
+sp v tenv (RecordMap Nothing x kv vv e) t = do
+  x <- sp v tenv x UnknownT
+  case typeof x of
+    RecordT r -> do
+      r' <- Map.traverseWithKey (\l t' -> sp v (Map.insert kv TextT (Map.insert vv t' tenv)) e UnknownT) r
+      return (Record r')
+sp v tenv (DynProj val lab) t =
+  -- Eh, we know something about the type of VAL: it's a record with *some* label and type t.
+  -- But we can't represent that, and it's not even clear that we could use that information at this point, so whatever...
+  DynProj <$> sp v tenv val UnknownT <*> sp v tenv lab TextT
 sp v tenv fun ty = -- unsafeLogCode fun $
   throwError $ "SPECIALIZE: " ++ show fun ++ "   ::   " ++ show ty ++ "   in context   " ++ show tenv
 
