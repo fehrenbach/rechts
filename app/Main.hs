@@ -23,7 +23,7 @@ import Control.Monad.State.Strict (evalStateT, runStateT, MonadState, get, put)
 import Control.Monad.Reader (MonadReader, runReaderT, local, asks)
 import Control.Monad.Except (MonadError, throwError, runExceptT, runExcept)
 import Control.Monad.Writer (MonadWriter, runWriterT, tell, pass)
-import Control.Monad (replicateM)
+import Control.Monad (replicateM, forM_)
 
 -- TODO decide what the proper primitive should be
 -- Currently this is by length only, which seems either overkill or dangerous, or both
@@ -349,6 +349,11 @@ unsafeLogCode' c = unsafePerformIO $ do
   putStrLn ""
   return c
 
+unsafeLogTEnv e a = unsafePerformIO $ do
+  let l = Map.toList e
+  mapM_ (\(k, v) -> putStrLn (show k ++ ": " ++ show v)) l
+  return a
+
 subst :: Variable -> Variable -> Expr -> Expr
 subst x y (Var t z)
   | x == z = Var t y
@@ -439,10 +444,13 @@ typeof (List (Just t) _) = VectorT t
 typeof (Switch (Just t) _ _) = t
 typeof (Indexed e) = VectorT (RecordT (Map.fromList [ ("p", TextT)
                                                     , ("v", elementType (typeof e)) ]))
-typeof (If a b c) = typeof b -- This is not quite true, because type variables might not have been instantiated yet: assert (typeof b == typeof c) (typeof b)
 typeof (Eq _ _) = BoolT
 typeof (And _ _) = BoolT
 typeof (PrependPrefix _ _) = TextT
+typeof (If a b c) = typeof b -- This is not quite true, because type variables might not have been instantiated yet: assert (typeof b == typeof c) (typeof b)
+typeof (Union l r) = typeof r -- Same as IF...
+typeof (List Nothing _) = UnknownT -- ugh... one ugly hack after another
+typeof (Var Nothing _) = UnknownT
 typeof otherwise = error (show otherwise)
 
 data Constraint
@@ -681,63 +689,42 @@ substSelf ev s otherwise = error $ "SUBSTSELF " ++  (show otherwise)
 unroll 0 ev view = Undefined "did not unroll often enough"
 unroll n (ev:rest) view = Lam Nothing ev (substSelf ev (unroll (n-1) rest view) view) -- substSelf ev (Lam Nothing ev (unroll (n-1) ev view)) view
 
--- sp :: Expr -> Expr -> Type -> m Expr
--- sp v (Self bindings arg) ty =
---   App <$> sp v v ty <*> pure arg
--- sp v (For var gen body) ty =
---   For var gen <$> sp v body ty
--- sp v (Var Nothing var) ty = return (Var Nothing var) 
--- sp v (Proj Nothing l e) ty =
---   Proj Nothing l <$> sp v e (RecordT (Map.singleton l ty))
-{-
-sp v (Switch Nothing x cs) (VariantT vs) = do
-  -- what to do about x? don't we need to specialize that too? But we don't have the type...
-  -- can we reverse-engineer the type somehow?
-  let cs' = Map.filterWithKey (\variant _ -> Map.member variant vs) cs
-  cs'' <- Map.traverseWithKey (\variant (var, e) -> do
-                                  let (Just ty) = Map.lookup variant vs
-                                  -- What about the type of variable bound in the case?
-                                  -- Actually, do we even know that? Do we need to?
-                                  body' <- sp v e ty
-                                  return (var, body'))
-          cs'
-  return (Switch Nothing x cs'')
--}
--- sp v tenv (Switch Nothing x cs) (VariantT vs) = do
---   let cs' = Map.filterWithKey (\variant _ -> Map.member variant vs) cs
---   cs'' <- Map.traverseWithKey (\variant (var, e) -> do
---                                   let (Just ty) = Map.lookup variant vs
---                                   -- What about the type of variable bound in the case?
---                                   -- Actually, do we even know that? Do we need to?
---                                   -- No, v has type ty
---                                   body' <- sp v e UnknownT 
---                                   return (var, body'))
---           cs'
---   return (Switch Nothing x cs'')
+-- sp v tenv x y | T.trace "SP: " False = undefined
+-- sp v tenv x y | unsafeLogCode x False = undefined
+-- sp v tenv x y | T.trace (" :: " ++ show y) False = undefined
+-- sp v tenv x y | unsafeLogTEnv tenv False = undefined
 sp v tenv (Record a) UnknownT =
   Record <$> traverse (\x -> sp v tenv x UnknownT) a
-sp v tenv (List Nothing a) t = do
-  -- nope, that's wrong.
-  List (Just t) <$> traverse (\x -> sp v tenv x UnknownT) a
 sp v tenv (Union a b) t = do
-  Union <$> sp v tenv a t <*> sp v tenv b t
+  -- Yeah.. this really needs to be constraint-based. FML.
+  let t' = mj (mj (typeof a) (typeof b)) t
+  a <- sp v tenv a t'
+  b <- sp v tenv b t'
+  return (Union a b)
 sp v tenv (App f x) t = do
-  f <- sp v tenv f (FunT UnknownT t)
   x <- sp v tenv x UnknownT
+  f <- sp v tenv f (FunT (typeof x) t)
   return $ App f x
 sp (view, envvar) tenv (Self bindings arg) t = do
   -- envvar' <- freshVar
   -- throwError $ "wtf is going on?" ++ show view
   sp (view, envvar) tenv (App (App view (Union bindings (Var Nothing envvar))) arg) (FunT UnknownT (FunT t UnknownT))
-sp v tenv (List Nothing a) (VectorT t) =
-  -- yeah.. this is definitely a unification problem
-  List (Just t) <$> traverse (\x -> sp v tenv x t) a
+sp v tenv (List Nothing a) t =
+  case t of
+    VectorT elt -> do
+      as <- traverse (\x -> sp v tenv x elt) a
+      let t' = V.foldl' mj elt (fmap typeof as)
+      return $ List (Just t') as
+    otherwise -> do
+      as <- traverse (\x -> sp v tenv x UnknownT) a
+      let t' = V.foldl' mj UnknownT (fmap typeof as)
+      return $ List (Just t') as
 sp v tenv (Eq a b) BoolT =
   -- yeah.. this is definitely a unification problem
   Eq <$> sp v tenv a UnknownT <*> sp v tenv b UnknownT
 sp v tenv (If a b c) t =
   If <$> sp v tenv a BoolT <*> sp v tenv b t <*> sp v tenv c t
-sp v tenv (Proj Nothing l x) t = do
+sp v tenv p@(Proj Nothing l x) t = do
   x <- sp v tenv x UnknownT -- really? Shouldn't it be {l :: UnknownT | _} 
   case typeof x of
     UnknownT -> return (Proj (Just t) l x)
@@ -746,7 +733,7 @@ sp v tenv (Proj Nothing l x) t = do
 sp v tenv (For var i o) t = do
   i <- sp v tenv i UnknownT
   case typeof i of
-    VectorT elt -> For var i <$> sp v (Map.insert var elt tenv) o (VectorT t)
+    VectorT elt -> For var i <$> sp v (Map.insert var elt tenv) o t
 sp v tenv (Var mt1 var) t3 =
   -- we have three sources of type information we need to potentially combine
   -- this is a mess
@@ -768,16 +755,25 @@ sp v tenv (Switch Nothing x cs) t = do
       return (Switch Nothing x cs'')
     UnknownT ->
       return (Switch (Just t) x cs)
-sp v tenv (Lam Nothing var body) (FunT a b) =
+sp v tenv (Lam Nothing var body) (FunT a b) = do
+  body <- sp v (Map.insert var a tenv) body b
   -- Yeah, this is more like it. But my environment and state handling is a mess.
-  Lam (Just (FunT a b)) var <$> sp v (Map.insert var a tenv) body b
+  return $ Lam (Just (FunT a (typeof body))) var body
+sp v@(_, envvar) tenv (Lookup Nothing x) t =
+  Lookup (Just (Var Nothing envvar)) <$> sp v tenv x TextT
 sp v tenv fun ty = -- unsafeLogCode fun $
   throwError $ "SPECIALIZE: " ++ show fun ++ "   ::   " ++ show ty ++ "   in context   " ++ show tenv
 
 -- meet or join or whatever -- combine partial type information as much as possible
+-- hmm.. so it currently looks like we don't actually ever need interesting partial information.
+-- partiality at the toplevel either known or unknown seems to be enough
+-- this suggests a bidirectional approach could actually work
+-- that would make everything a bit cleaner
 mj :: Type -> Type -> Type
 mj UnknownT t = t
 mj t UnknownT = t
+mj TextT TextT = TextT
+mj x y = error $ show x ++ " " ++ show y
 
 -- specialize :: Expr -> Type -> m Expr
 specialize envvar fun ty = sp (fun, envvar) mempty fun ty
@@ -795,9 +791,10 @@ desugar (Untrace (Var Nothing v) a) = do
   case v' of
     Just (View v'') -> do
       f <- specialize fv (Lam Nothing fv v'') (FunT UnknownT (FunT ta UnknownT))
+      let f' = unsafeLogCode f f
       -- let steps = 10
       -- vars <- replicateM steps freshVar
-      return (App (App f (List Nothing mempty)) a''')
+      return (App (App f' (List Nothing mempty)) a''')
       -- return (App (App (unroll steps vars v'') (List Nothing mempty)) a')
     _ -> throwError $ "Variable " ++ show v ++ " did not evaluate to a VIEW"
 desugar (Untrace notavar _) = throwError $ "For now, the first argument to UNTRACE has to be a variable referring to a VIEW, but is: " ++ show notavar
@@ -806,7 +803,7 @@ desugar x@(VBool _) = return x
 desugar x@(VInt _) = return x
 desugar x@(VText _) = return x
 desugar v@(View _) = return v
-desugar s@(Self _ _) = return s
+desugar s@(Self _ _) = throwError $ "All references to SELF should have been desugared"
 desugar t@(Table _ _) = return t
 desugar x@(Var Nothing _) = return x
 desugar (Indexed a) = Indexed <$> desugar a
@@ -1024,9 +1021,9 @@ repl env pstate = do
       case runExcept $ flip runReaderT env $ evalStateT (desugar e) 10000 of
         Left err -> putStrLn ("DESUGAR error: " ++ show err)
         Right de -> do
-          printCode stdout de
-          putStrLn ""
-          -- putStrLn "desugared code omitted"
+          -- printCode stdout de
+          -- putStrLn ""
+          putStrLn "desugared code omitted"
           -- case runExcept $ runWriterT $ flip runReaderT mempty $ evalStateT (tc env de) 15000 of
           --   Left err -> putStrLn $ show err
           --   Right (tt, cs) -> do
@@ -1043,6 +1040,11 @@ repl env pstate = do
           --           Right e -> do
           --             printCode stdout e
           --             putStrLn ""
+          case runExcept $ evalStateT (beta' env de) 20000 of
+            Left err -> putStrLn ("1st stage error: " ++ err)
+            Right e -> do
+              printCode stdout e
+              putStrLn ""
   repl env pstate
 
 
