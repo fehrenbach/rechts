@@ -2,6 +2,7 @@ val = view \t.
   switch t
     case Var v => lookup v
     case Int i => i
+    case Text str => str
     case If it =>
       self [] it.branch
     case Record rt =>

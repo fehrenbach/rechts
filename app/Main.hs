@@ -466,6 +466,7 @@ typeof (Union l r) = typeof r -- Same as IF...
 -- typeof (Var Nothing _) = UnknownT
 typeof (Switch Nothing _ _) = UnknownT
 typeof (Proj Nothing _ _) = UnknownT
+typeof (DynProj (Just t) _ _) = t
 typeof otherwise = error (show otherwise)
 
 data Constraint
@@ -613,8 +614,11 @@ tc env (PrependPrefix l r) = do
   return $ PrependPrefix l r
 tc env (DynProj (Just t) field record) =
   DynProj (Just t) <$> tc env field <*> tc env record
-tc env (Lookup runtimeEnv var) =
-  Lookup runtimeEnv <$> tc env var
+tc env (Lookup (Just runtimeEnv) var) = do
+  -- Eh, Lookup close over some environement or something?
+  re <- tc env runtimeEnv
+  var <- tc env var
+  return (Lookup (Just re) var)
 tc env (Union l r) =
   -- eh, this is completely fucked up
   Union <$> tc env l <*> tc env r
@@ -650,6 +654,7 @@ applySubst s x@(Table _ _) = x
 applySubst s (Indexed a) = Indexed (applySubst s a)
 applySubst s (App a b) = App (applySubst s a) (applySubst s b)
 applySubst s (And a b) = And (applySubst s a) (applySubst s b)
+applySubst s (Union a b) = Union (applySubst s a) (applySubst s b)
 applySubst s (Eq a b) = Eq (applySubst s a) (applySubst s b)
 applySubst s (PrependPrefix a b) = PrependPrefix (applySubst s a) (applySubst s b)
 applySubst s (For v a b) = For v (applySubst s a) (applySubst s b)
@@ -683,8 +688,9 @@ solve s (c : cs) = case c of
   EqC TextT TextT -> solve s cs
   EqC BoolT BoolT -> solve s cs
   EqC IntT IntT -> solve s cs
-  -- EqC x UnknownT -> solve s cs
-  -- EqC UnknownT x -> solve s cs
+  EqC UnknownT UnknownT -> solve s cs
+  EqC x UnknownT -> solve s cs
+  EqC UnknownT x -> solve s cs
   VariantLabelHasType (VariantT variant) l (TyVar v)
     | Map.size variant == 1 ->
       case Map.lookup l variant of
@@ -696,6 +702,9 @@ solve s (c : cs) = case c of
           -- let t = AbsurdT 
               -- s' = Map.insert v t (fmap (substT (Map.singleton v t)) s)
           -- in solve s' (fmap (substC s') cs)
+  VariantLabelHasType (VariantT variant) l t ->
+    case Map.lookup l variant of
+      Just t' | t == t' -> solve s cs
   RecordLabelHasType _ (RecordT r) l (TyVar v) ->
     case Map.lookup l r of
       Just t ->
@@ -755,7 +764,7 @@ sp (view, envvar) tenv (Self bindings arg) t = do
   -- envvar' <- freshVar
   -- throwError $ "wtf is going on?" ++ show view
   newView@(Lam _ newEnvVar _) <- freshen view
-  spNewView <- sp (view, newEnvVar) tenv newView (FunT UnknownT (FunT (typeof arg) t))
+  spNewView <- sp (view, newEnvVar) tenv newView (FunT UnknownT (FunT (typeof arg) UnknownT))
   return (App (App spNewView (Union bindings (Var Nothing envvar))) arg)
   -- sp (view, newEnvVar) tenv (App (App newView (Union bindings (Var Nothing envvar))) arg) (FunT UnknownT (FunT t UnknownT))
 sp v tenv (List Nothing a) t =
@@ -783,28 +792,6 @@ sp v tenv (For var i o) t = do
   i <- sp v tenv i UnknownT
   case typeof i of
     VectorT elt -> For var i <$> sp v (Map.insert var elt tenv) o t
-sp v tenv (Var mt1 var) t3 =
-  -- we have three sources of type information we need to potentially combine
-  -- this is a mess
-  case (unsafeLogTEnv tenv mt1, Map.lookup var tenv) of
-    (Just t1, Just t2) -> return $ Var (Just (mj (mj t1 t2) t3)) var
-    (Nothing, Just t2) -> return $ Var (Just (mj t2 t3)) var
-    (Nothing, Nothing) -> return $ Var (Just t3) var
-sp v tenv sw@(Switch Nothing x cs) t = do
-  x <- sp v tenv x UnknownT
-  case typeof x of
-    VariantT vs -> do
-      let cs' = Map.filterWithKey (\variant _ -> Map.member variant vs) cs
-      cs'' <- Map.traverseWithKey (\variant (var, e) -> do
-                                      let (Just ty) = Map.lookup variant vs
-                                      -- No, v has type ty
-                                      body' <- sp v (Map.insert var ty tenv) e t
-                                      return (var, body')) cs'
-      -- TODO I might need to combine the types of the bodies with the "pushed" type t (= UnknownT)
-      return (Switch Nothing x cs'')
-    UnknownT ->
-      return (Switch (Just t) x cs)
-    otherwise -> throwError $ unsafeLogCode sw (show otherwise)
 sp v tenv (Lam Nothing var body) (FunT a b) = do
   body <- sp v (Map.insert var a tenv) body b
   -- Yeah, this is more like it. But my environment and state handling is a mess.
@@ -833,6 +820,29 @@ sp v tenv (DynProj Nothing val lab) t =
   -- Eh, we know something about the type of VAL: it's a record with *some* label and type t.
   -- But we can't represent that, and it's not even clear that we could use that information at this point, so whatever...
   DynProj (Just t) <$> sp v tenv val UnknownT <*> sp v tenv lab TextT
+sp v tenv sw@(Switch Nothing x cs) t = do
+  x <- sp v tenv x UnknownT
+  case typeof x of
+    VariantT vs -> do
+      let cs' = Map.filterWithKey (\variant _ -> Map.member variant vs) cs
+      cs'' <- Map.traverseWithKey (\variant (var, e) -> do
+                                      let (Just ty) = Map.lookup variant vs
+                                      -- No, v has type ty
+                                      body' <- sp v (Map.insert var ty tenv) e t
+                                      return (var, body')) cs'
+      -- TODO I might need to combine the types of the bodies with the "pushed" type t (= UnknownT)
+      return (Switch Nothing x cs'')
+    -- UnknownT ->
+    --   return (Switch (Just t) x cs)
+    -- otherwise -> throwError $ unsafeLogCode sw (show otherwise)
+sp v tenv x y | unsafeLogTEnv tenv False = undefined
+sp v tenv (Var mt1 var) t3 =
+  -- we have three sources of type information we need to potentially combine
+  -- this is a mess
+  case (mt1, Map.lookup var tenv) of
+    (Just t1, Just t2) -> return $ Var (Just (mj (mj t1 t2) t3)) var
+    (Nothing, Just t2) -> return $ Var (Just (mj t2 t3)) var
+    (Nothing, Nothing) -> return $ Var (Just t3) var
 sp v tenv fun ty = -- unsafeLogCode fun $
   throwError $ "SPECIALIZE: " ++ show fun ++ "   ::   " ++ show ty ++ "   in context   " ++ show tenv
 
@@ -1105,13 +1115,15 @@ repl env pstate = do
                 Left err -> putStrLn $ show err
                 Right s -> do
                   let tt' = applySubst s tt
+                  printCode stdout tt'
+                  putStrLn ""
                   printType stdout (typeof tt')
                   putStrLn ""
-                  -- case runExcept $ evalStateT (beta' env tt') 20000 of
-                    -- Left err -> putStrLn ("1st stage error: " ++ err)
-                    -- Right e -> do
-                      -- printCode stdout e
-                      -- putStrLn ""
+                  case runExcept $ evalStateT (beta' env tt') 20000 of
+                    Left err -> putStrLn ("1st stage error: " ++ err)
+                    Right e -> do
+                      printCode stdout e
+                      putStrLn ""
           -- case runExcept $ evalStateT (beta' env de) 20000 of
           --   Left err -> putStrLn ("1st stage error: " ++ err)
           --   Right e -> do
