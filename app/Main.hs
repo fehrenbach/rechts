@@ -467,6 +467,7 @@ typeof (Union l r) = typeof r -- Same as IF...
 typeof (Switch Nothing _ _) = UnknownT
 typeof (Proj Nothing _ _) = UnknownT
 typeof (DynProj (Just t) _ _) = t
+typeof (Lookup _ _) = UnknownT
 typeof otherwise = error (show otherwise)
 
 data Constraint
@@ -661,11 +662,13 @@ applySubst s (For v a b) = For v (applySubst s a) (applySubst s b)
 applySubst s (Lam (Just t) v a) = Lam (Just (substT s t)) v (applySubst s a)
 applySubst s (Tag t a) = Tag t (applySubst s a)
 applySubst s (Proj (Just t) l a) = Proj (Just (substT s t)) l (applySubst s a)
+applySubst s (DynProj (Just t) l a) = DynProj (Just (substT s t)) (applySubst s l) (applySubst s a)
 applySubst s (Var (Just t) x) = Var (Just (substT s t)) x
 applySubst s (Switch (Just t) a bs) = Switch (Just (substT s t)) (applySubst s a) (fmap (\(v, b) -> (v, applySubst s b)) bs)
 applySubst s (List (Just t) a) = List (Just (substT s t)) (fmap (applySubst s) a)
 applySubst s (Record a) = Record (fmap (applySubst s) a)
 applySubst s (If a b c) = If (applySubst s a) (applySubst s b) (applySubst s c)
+applySubst s (Lookup (Just a) b) = Lookup (Just (applySubst s a)) (applySubst s b)
 applySubst s otherwise = error $ "APPLYSUBST " ++ show otherwise
 
 solve :: (MonadError String m) => Map.Map Int Type -> [Constraint] -> m (Map.Map Int Type)
