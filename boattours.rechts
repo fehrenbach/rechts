@@ -5,9 +5,11 @@ val = view \t.
     case If it =>
       self [] it.branch
     case Record rt =>
-      rmap rt with (k = t) => self [] t
+      rmap rt with (k = tr) => self [] tr
     case Proj pt =>
       (self [] (pt.rec).t)!pt.lab
+      // pt.res              // this would only help in the value case
+      // self [] pt.resTrace // a trace for only the label is hard to generate, but might be possible
     case List lt =>
       for (xt <- lt)
         [self [] xt.t]

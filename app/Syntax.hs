@@ -40,7 +40,7 @@ data Expr
   | App Expr Expr
   | Record (Map.Map Text Expr)
   | Proj (Maybe Type) Text Expr
-  | DynProj Expr Expr -- this is flipped for little good reason: a!b == DynProj b a
+  | DynProj (Maybe Type) Expr Expr -- this is flipped for little good reason: a!b == DynProj b a
   | Tag Text Expr
   | Switch (Maybe Type) Expr (Map.Map Text (Variable, Expr))
   | If Expr Expr Expr

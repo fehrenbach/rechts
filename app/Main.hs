@@ -1,4 +1,4 @@
-{-# LANGUAGE OverloadedStrings, TupleSections, FlexibleContexts #-}
+{-# LANGUAGE OverloadedStrings, TupleSections, FlexibleContexts, PartialTypeSignatures #-}
 
 module Main where
 
@@ -24,6 +24,7 @@ import Control.Monad.Reader (MonadReader, runReaderT, local, asks)
 import Control.Monad.Except (MonadError, throwError, runExceptT, runExcept)
 import Control.Monad.Writer (MonadWriter, runWriterT, tell, pass)
 import Control.Monad (replicateM, forM_)
+import GHC.Stack
 
 -- TODO decide what the proper primitive should be
 -- Currently this is by length only, which seems either overkill or dangerous, or both
@@ -118,7 +119,7 @@ eval env (RecordMap Nothing r kv vv e) = do
   (Record r) <- eval env r
   r' <- Map.traverseWithKey (\l v -> eval (Map.insert kv (VText l) (Map.insert vv v env)) e) r
   return (Record r')
-eval env (DynProj l r) = do
+eval env (DynProj Nothing l r) = do
   rec@(Record r) <- eval env r
   (VText l) <- eval env l
   case Map.lookup l r of
@@ -272,8 +273,9 @@ trace (Proj Nothing l e) = do
   mtr "Proj"
       (Proj Nothing l (Proj Nothing "v" te))
       (rec [ ("lab", VText l),
-             ("rec", te),
-             ("res", Proj Nothing l (Proj Nothing "v" te)) ])
+             ("rec", te)
+             -- ("res", Proj Nothing l (Proj Nothing "v" te))
+             ])
 trace (If c t e) = do
   ct <- trace c
   tt <- trace t
@@ -312,7 +314,7 @@ trace (PrependPrefix _ _) = undefined
 trace (PrefixOf _ _) = undefined
 trace (StripPrefix _ _) = undefined
 trace (RecordMap Nothing _ _ _ _) = undefined
-trace (DynProj _ _) = undefined
+trace (DynProj Nothing _ _) = undefined
 trace (Tag _ _) = undefined
 trace (Switch Nothing _ _) = undefined
 trace (View _) = undefined
@@ -338,6 +340,12 @@ unsafeLogCode e a = unsafePerformIO $ do
   putStrLn ""
   return a
 
+unsafeLogType :: Type -> a -> a
+unsafeLogType e a = unsafePerformIO $ do
+  printType stdout e
+  putStrLn ""
+  return a
+
 unsafeLogEnv :: (Map.Map Variable b) -> a -> a
 unsafeLogEnv e a = unsafePerformIO $ do
   putStrLn (show (Map.keys e))
@@ -351,15 +359,17 @@ unsafeLogCode' c = unsafePerformIO $ do
 
 unsafeLogTEnv e a = unsafePerformIO $ do
   let l = Map.toList e
-  mapM_ (\(k, v) -> putStrLn (show k ++ ": " ++ show v)) l
+  mapM_ (\(k, v) -> do
+            putStr (show k ++ " :: ")
+            unsafeLogType v (return ())) l
   return a
 
 subst :: Variable -> Variable -> Expr -> Expr
 subst x y (Var t z)
   | x == z = Var t y
   | otherwise = Var t z
-subst x y (Switch Nothing a cs) =
-  Switch Nothing (subst x y a) (fmap (\(v, c) -> if v == x then (v, c) else (v, subst x y c)) cs)
+subst x y (Switch mt a cs) =
+  Switch mt (subst x y a) (fmap (\(v, c) -> if v == x then (v, c) else (v, subst x y c)) cs)
 subst x y (For z a b)
   | x == z = For z (subst x y a) b
   | otherwise = For z (subst x y a) (subst x y b)
@@ -379,14 +389,17 @@ subst x y (Eq a b) =
   Eq (subst x y a) (subst x y b)
 subst x y (Union a b) =
   Union (subst x y a) (subst x y b)
-subst x y (DynProj a b) =
-  DynProj (subst x y a) (subst x y b)
+subst x y (DynProj Nothing a b) =
+  DynProj Nothing (subst x y a) (subst x y b)
 subst x y (List Nothing ls) =
   List Nothing (fmap (subst x y) ls)
 subst x y (Self vars arg) =
   Self (subst x y vars) (subst x y arg)
 subst x y (Record fs) =
   Record (fmap (subst x y) fs)
+subst x y l@(Lam Nothing var body)
+  | x == var = l
+  | otherwise = Lam Nothing var (subst x y body)
 subst _ _ otherwise = error $ show otherwise
 
 freshen :: MonadState Int m => Expr -> m Expr
@@ -416,7 +429,7 @@ freshen (Proj Nothing l x) = Proj Nothing l <$> freshen x
 freshen (If a b c) = If <$> freshen a <*> freshen b <*> freshen c
 freshen (Eq a b) = Eq <$> freshen a <*> freshen b
 freshen (Union a b) = Union <$> freshen a <*> freshen b
-freshen (DynProj a b) = DynProj <$> freshen a <*> freshen b
+freshen (DynProj Nothing a b) = DynProj Nothing <$> freshen a <*> freshen b
 freshen (List Nothing xs) = List Nothing <$> traverse freshen xs
 freshen (Record xs) = Record <$> traverse freshen xs
 freshen (Self vars arg) = Self <$> freshen vars <*> freshen arg
@@ -427,7 +440,7 @@ elementType (VectorT et) = et
 elementType err = error (show err)
 
 -- Ugh, I think this idea to avoid putting types into the Expr datatype was a bad one
-typeof :: Expr -> Type
+typeof :: HasCallStack => Expr -> Type
 typeof (VInt _) = IntT
 typeof (VBool _) = BoolT
 typeof (VText _) = TextT
@@ -449,8 +462,10 @@ typeof (And _ _) = BoolT
 typeof (PrependPrefix _ _) = TextT
 typeof (If a b c) = typeof b -- This is not quite true, because type variables might not have been instantiated yet: assert (typeof b == typeof c) (typeof b)
 typeof (Union l r) = typeof r -- Same as IF...
-typeof (List Nothing _) = UnknownT -- ugh... one ugly hack after another
-typeof (Var Nothing _) = UnknownT
+-- typeof (List Nothing _) = UnknownT -- ugh... one ugly hack after another
+-- typeof (Var Nothing _) = UnknownT
+typeof (Switch Nothing _ _) = UnknownT
+typeof (Proj Nothing _ _) = UnknownT
 typeof otherwise = error (show otherwise)
 
 data Constraint
@@ -477,6 +492,12 @@ tc :: (MonadReader (Map.Map Variable Type) m,
 tc env x@(VBool _) = return x
 tc env x@(VInt _) = return x
 tc env x@(VText _) = return x
+-- eh, stupid duplication..
+tc env (Lam (Just t) v e) = do
+  tv <- freshTVar
+  e <- local (Map.insert v tv) (tc env e)
+  uniEq t (FunT tv (typeof e))
+  return (Lam (Just (FunT tv (typeof e))) v e)
 tc env (Lam Nothing v e) = do
   tv <- freshTVar
   e <- local (Map.insert v tv) (tc env e)
@@ -527,6 +548,12 @@ tc env (Indexed a) = do
   case typeof a' of
     VectorT _ -> return (Indexed a')
     _ -> throwError $ "argument to indexed must have vector type"
+-- better way of dealing with duplication? Check as if there's no type, then verify?
+-- actually, if the type is (Just UnknownT) this will fail... We need some subtyping for handling unknown...
+tc env var@(Var (Just t) v) = do
+  Var (Just t') _ <- tc env (Var Nothing v)
+  uniEq t t'
+  return var
 tc env (Var Nothing v) = do
   t <- asks (Map.lookup v)
   -- already got a type in the environment?
@@ -537,7 +564,12 @@ tc env (Var Nothing v) = do
       Just a -> do
         a' <- tc env a
         return (Var (Just (typeof a')) v)
-      Nothing -> throwError $ "unbound variable in type context or global env"
+      Nothing -> throwError $ "unbound variable in type context or global env: " ++ show v
+        -- return (Var (Just UnknownT) v)
+tc env (List (Just t) as) = do
+  List (Just t') as <- tc env (List Nothing as)
+  -- uniEq t t'
+  return (List (Just t') as)
 tc env (List Nothing as) = do
   elt <- freshTVar
   as <- traverse (\a -> do
@@ -579,7 +611,13 @@ tc env (PrependPrefix l r) = do
   uniEq (typeof l) TextT
   uniEq (typeof r) TextT
   return $ PrependPrefix l r
-  
+tc env (DynProj (Just t) field record) =
+  DynProj (Just t) <$> tc env field <*> tc env record
+tc env (Lookup runtimeEnv var) =
+  Lookup runtimeEnv <$> tc env var
+tc env (Union l r) =
+  -- eh, this is completely fucked up
+  Union <$> tc env l <*> tc env r
 tc _ otherwise = throwError $ "no tc case for: " ++ show otherwise
 
 substT s (TyVar z) = case Map.lookup z s of
@@ -638,12 +676,15 @@ solve s (c : cs) = case c of
   EqC (VectorT a) (VectorT b) -> solve s ([EqC a b] ++ cs)
   EqC (RecordT a) (RecordT b) -> if (Map.keys a == Map.keys b)
     then solve s (zipWith (\(_, l) (_, r) -> EqC l r) (Map.toList a) (Map.toList b) ++ cs)
-    else throwError "records have different keys"
+    else throwError $ "records have different keys " ++ show (Map.keys a) ++ " != " ++ show (Map.keys b)
   EqC (VariantT a) (VariantT b) -> if (Map.keys a == Map.keys b)
     then solve s (zipWith (\(_, l) (_, r) -> EqC l r) (Map.toList a) (Map.toList b) ++ cs)
     else throwError "variants have different keys"
   EqC TextT TextT -> solve s cs
   EqC BoolT BoolT -> solve s cs
+  EqC IntT IntT -> solve s cs
+  -- EqC x UnknownT -> solve s cs
+  -- EqC UnknownT x -> solve s cs
   VariantLabelHasType (VariantT variant) l (TyVar v)
     | Map.size variant == 1 ->
       case Map.lookup l variant of
@@ -680,7 +721,7 @@ substSelf ev s (Record as) = Record (fmap (substSelf ev s) as)
 substSelf ev s (Switch Nothing a bs) = Switch Nothing (substSelf ev s a) (fmap (\(v, b) -> (v, substSelf ev s b)) bs)
 substSelf ev s (Eq a b) = Eq (substSelf ev s a) (substSelf ev s b)
 substSelf ev s (Union a b) = Union (substSelf ev s a) (substSelf ev s b)
-substSelf ev s (DynProj a b) = DynProj (substSelf ev s a) (substSelf ev s b)
+substSelf ev s (DynProj Nothing a b) = DynProj Nothing (substSelf ev s a) (substSelf ev s b)
 substSelf ev s (For v a b) = For v (substSelf ev s a) (substSelf ev s b)
 substSelf ev s (RecordMap Nothing a x y b) = RecordMap Nothing (substSelf ev s a) x y (substSelf ev s b)
 substSelf ev s (If a b c) = If (substSelf ev s a) (substSelf ev s b) (substSelf ev s c)
@@ -689,10 +730,14 @@ substSelf ev s otherwise = error $ "SUBSTSELF " ++  (show otherwise)
 unroll 0 ev view = Undefined "did not unroll often enough"
 unroll n (ev:rest) view = Lam Nothing ev (substSelf ev (unroll (n-1) rest view) view) -- substSelf ev (Lam Nothing ev (unroll (n-1) ev view)) view
 
--- sp v tenv x y | T.trace "SP: " False = undefined
--- sp v tenv x y | unsafeLogCode x False = undefined
+sp :: (MonadError String m, MonadState Int m, HasCallStack) => (Expr, Variable) -> Map.Map Variable Type -> Expr -> Type -> m Expr
+sp v tenv x y | T.trace "SP ---------------------------------- " False = undefined
+sp v tenv x y | unsafeLogCode x False = undefined
+sp v tenv x y | unsafeLogType y False = undefined
 -- sp v tenv x y | T.trace (" :: " ++ show y) False = undefined
 -- sp v tenv x y | unsafeLogTEnv tenv False = undefined
+sp v tenv x@(VInt _) _ = return x
+sp v tenv x@(VText _) _ = return x
 sp v tenv (Record a) UnknownT =
   Record <$> traverse (\x -> sp v tenv x UnknownT) a
 sp v tenv (Union a b) t = do
@@ -706,9 +751,13 @@ sp v tenv (App f x) t = do
   f <- sp v tenv f (FunT (typeof x) t)
   return $ App f x
 sp (view, envvar) tenv (Self bindings arg) t = do
+  arg <- sp (view, envvar) tenv arg UnknownT
   -- envvar' <- freshVar
   -- throwError $ "wtf is going on?" ++ show view
-  sp (view, envvar) tenv (App (App view (Union bindings (Var Nothing envvar))) arg) (FunT UnknownT (FunT t UnknownT))
+  newView@(Lam _ newEnvVar _) <- freshen view
+  spNewView <- sp (view, newEnvVar) tenv newView (FunT UnknownT (FunT (typeof arg) t))
+  return (App (App spNewView (Union bindings (Var Nothing envvar))) arg)
+  -- sp (view, newEnvVar) tenv (App (App newView (Union bindings (Var Nothing envvar))) arg) (FunT UnknownT (FunT t UnknownT))
 sp v tenv (List Nothing a) t =
   case t of
     VectorT elt -> do
@@ -737,11 +786,11 @@ sp v tenv (For var i o) t = do
 sp v tenv (Var mt1 var) t3 =
   -- we have three sources of type information we need to potentially combine
   -- this is a mess
-  case (mt1, Map.lookup var tenv) of
+  case (unsafeLogTEnv tenv mt1, Map.lookup var tenv) of
     (Just t1, Just t2) -> return $ Var (Just (mj (mj t1 t2) t3)) var
     (Nothing, Just t2) -> return $ Var (Just (mj t2 t3)) var
     (Nothing, Nothing) -> return $ Var (Just t3) var
-sp v tenv (Switch Nothing x cs) t = do
+sp v tenv sw@(Switch Nothing x cs) t = do
   x <- sp v tenv x UnknownT
   case typeof x of
     VariantT vs -> do
@@ -755,6 +804,7 @@ sp v tenv (Switch Nothing x cs) t = do
       return (Switch Nothing x cs'')
     UnknownT ->
       return (Switch (Just t) x cs)
+    otherwise -> throwError $ unsafeLogCode sw (show otherwise)
 sp v tenv (Lam Nothing var body) (FunT a b) = do
   body <- sp v (Map.insert var a tenv) body b
   -- Yeah, this is more like it. But my environment and state handling is a mess.
@@ -765,12 +815,24 @@ sp v tenv (RecordMap Nothing x kv vv e) t = do
   x <- sp v tenv x UnknownT
   case typeof x of
     RecordT r -> do
-      r' <- Map.traverseWithKey (\l t' -> sp v (Map.insert kv TextT (Map.insert vv t' tenv)) e UnknownT) r
+      r' <- Map.traverseWithKey
+        (\l t' -> do
+            -- kv' <- freshTVar
+            -- vv' <- freshTVar
+            -- let e' = subst vv vv' (subst kv kv' e)
+            -- rmap x with (k = v) => foo
+            -- ~> (\k.\v.foo) k x.k  forall k in x
+            let fun = Lam Nothing kv (Lam Nothing vv e)
+            let app = App (App fun (VText l)) (Proj Nothing l x)
+            sp v tenv app t')
+        r
+            -- e' <- freshen e
+            -- sp v (Map.insert kv TextT (Map.insert vv t' tenv)) e UnknownT) r
       return (Record r')
-sp v tenv (DynProj val lab) t =
+sp v tenv (DynProj Nothing val lab) t =
   -- Eh, we know something about the type of VAL: it's a record with *some* label and type t.
   -- But we can't represent that, and it's not even clear that we could use that information at this point, so whatever...
-  DynProj <$> sp v tenv val UnknownT <*> sp v tenv lab TextT
+  DynProj (Just t) <$> sp v tenv val UnknownT <*> sp v tenv lab TextT
 sp v tenv fun ty = -- unsafeLogCode fun $
   throwError $ "SPECIALIZE: " ++ show fun ++ "   ::   " ++ show ty ++ "   in context   " ++ show tenv
 
@@ -779,11 +841,11 @@ sp v tenv fun ty = -- unsafeLogCode fun $
 -- partiality at the toplevel either known or unknown seems to be enough
 -- this suggests a bidirectional approach could actually work
 -- that would make everything a bit cleaner
-mj :: Type -> Type -> Type
+mj :: HasCallStack => Type -> Type -> Type
 mj UnknownT t = t
 mj t UnknownT = t
-mj TextT TextT = TextT
-mj x y = error $ show x ++ " " ++ show y
+mj x y | x == y = x
+mj x y = error $ show x ++ " <mj> " ++ show y
 
 -- specialize :: Expr -> Type -> m Expr
 specialize envvar fun ty = sp (fun, envvar) mempty fun ty
@@ -951,7 +1013,7 @@ beta env (PrependPrefix l r) = do
     (_, _) -> return (PrependPrefix l r)
 beta env (PrefixOf l r) = PrefixOf <$> beta env l <*> beta env r
 beta env (StripPrefix _ _) = undefined
-beta env (DynProj l r) = do
+beta env (DynProj Nothing l r) = do
   VText l' <- beta env l
   r' <- beta env r
   case r' of
@@ -1034,27 +1096,27 @@ repl env pstate = do
           -- printCode stdout de
           -- putStrLn ""
           putStrLn "desugared code omitted"
-          -- case runExcept $ runWriterT $ flip runReaderT mempty $ evalStateT (tc env de) 15000 of
-          --   Left err -> putStrLn $ show err
-          --   Right (tt, cs) -> do
-          --     -- printType stdout (typeof tt)
-          --     -- putStrLn ""
-          --     case runExcept $ solve mempty (Set.toList cs) of
-          --       Left err -> putStrLn $ show err
-          --       Right s -> do
-          --         let tt' = applySubst s tt
-          --         printType stdout (typeof tt')
-          --         putStrLn ""
-          --         case runExcept $ evalStateT (beta' env tt') 20000 of
-          --           Left err -> putStrLn ("1st stage error: " ++ err)
-          --           Right e -> do
-          --             printCode stdout e
-          --             putStrLn ""
-          case runExcept $ evalStateT (beta' env de) 20000 of
-            Left err -> putStrLn ("1st stage error: " ++ err)
-            Right e -> do
-              printCode stdout e
+          case runExcept $ runWriterT $ flip runReaderT mempty $ evalStateT (tc env de) 15000 of
+            Left err -> putStrLn $ show err
+            Right (tt, cs) -> do
+              printType stdout (typeof tt)
               putStrLn ""
+              case runExcept $ solve mempty (Set.toList cs) of
+                Left err -> putStrLn $ show err
+                Right s -> do
+                  let tt' = applySubst s tt
+                  printType stdout (typeof tt')
+                  putStrLn ""
+                  -- case runExcept $ evalStateT (beta' env tt') 20000 of
+                    -- Left err -> putStrLn ("1st stage error: " ++ err)
+                    -- Right e -> do
+                      -- printCode stdout e
+                      -- putStrLn ""
+          -- case runExcept $ evalStateT (beta' env de) 20000 of
+          --   Left err -> putStrLn ("1st stage error: " ++ err)
+          --   Right e -> do
+          --     printCode stdout e
+          --     putStrLn ""
   repl env pstate
 
 

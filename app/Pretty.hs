@@ -32,6 +32,7 @@ prettyType (VariantT r) = "[|" <+> align (vt (Map.toAscList r)) <+> "|]"
   where vt [] = empty
         vt [(k, t)] = tag k <> ":" <+> group (prettyType t)
         vt ((k, t):tes) = tag k <> ":" <+> group (prettyType t) <> "|" <$> vt tes
+prettyType (FunT a b) = parens $ prettyType a <+> "->" <+> prettyType b
 prettyType otherwise = pretty (show otherwise)
 
 prettyCode :: Expr -> Doc
@@ -61,10 +62,10 @@ prettyCode (Switch _ e cs) = hang 2 $ magenta "switch" <+> prettyCode e <$> case
     case' (t, (v, e)) = hang 2 $ magenta "case" <+> green (pretty (unpack t)) <+> prettyVariable v <+> "=>" </> prettyCode e
 prettyCode (App a b) =
   -- red "(" <> prettyCode a <+> red "$" <+> prettyCode b <> red ")"
-  parens $ prettyCode a <+> prettyCode b
+  prettyCode a </> prettyCode b
 prettyCode (Proj _ l e) =
   prettyCode e <> magenta "." <> label l
-prettyCode (DynProj a b) =
+prettyCode (DynProj _ a b) =
   parens (prettyCode b) <> magenta "!" <> parens (prettyCode a)
 prettyCode (Union l r) =
   parens $ prettyCode l <+> "++" <+> prettyCode r
@@ -88,12 +89,16 @@ prettyCode (If c t e) =
   align $ magenta "if" <+> group (prettyCode c) <$> hang 2 (magenta "then" </> prettyCode t) <$> hang 2 (magenta "else" </> prettyCode e)
 prettyCode (RecordMap _ a x y b) =
   magenta "rmap" <+> prettyCode a <+> magenta "with" <+> parens (prettyVariable x <+> "=" <+> prettyVariable y) <+> "=>" </> prettyCode b
+prettyCode (Lookup _ b) =
+  magenta "lookup" <+> prettyCode b
 prettyCode (Undefined t) =
   magenta "undefined" <+> prettyCode (VText t)
+prettyCode (Self b e) =
+  magenta "self" <+> prettyCode b <+> prettyCode e
 prettyCode other = string (show other)
 
 printCode :: Handle -> Expr -> IO ()
-printCode h c = displayIO h (renderPretty 0.8 120 (prettyCode c))
+printCode h c = displayIO h (renderSmart 0.8 120 (prettyCode c))
 
 printType :: Handle -> Type -> IO ()
 printType h t = displayIO h (renderPretty 0.8 120 (prettyType t))

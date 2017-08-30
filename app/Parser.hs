@@ -156,7 +156,7 @@ expr = makeExprParser term table
     table = [ [ Postfix (do symbol "."
                             l <- identifier
                             return (Proj Nothing l)) ]
-            , [ InfixL (flip DynProj <$ symbol "!") ]
+            , [ InfixL (flip (DynProj Nothing) <$ symbol "!") ]
             , [ InfixL (App <$ return ()) ]
             , [ InfixN (Eq <$ symbol "==") ]
             , [ InfixR (And <$ symbol "&&") ]
